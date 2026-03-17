@@ -46,7 +46,8 @@ async function getToken(options) {
 
 /**
  * Polls a pending statement handle until complete or max attempts reached.
- * Returns { complete: true, rows, metadata } or { complete: false, statementHandle, elapsed }.
+ * If max attempts are exceeded the query is cancelled (per Snowflake SQL API spec)
+ * and { complete: false, timedOut: true } is returned.
  */
 async function pollToCompletion(statementHandle, baseUrl, token, authType, startTime) {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
@@ -57,8 +58,10 @@ async function pollToCompletion(statementHandle, baseUrl, token, authType, start
     }
     Logger.debug({ attempt, statementHandle }, 'Query still running — retrying poll');
   }
-  // Exceeded poll budget — return handle for the frontend "Check Status" button
-  return { complete: false, statementHandle, elapsedMs: Date.now() - startTime };
+  // Exceeded poll budget — cancel per spec to free Snowflake compute resources
+  await cancelStatement({ baseUrl, token, authType, statementHandle });
+  Logger.debug({ statementHandle }, 'Cancelled long-running query after max poll attempts');
+  return { complete: false, timedOut: true, statementHandle, elapsedMs: Date.now() - startTime };
 }
 
 function sleep(ms) {
@@ -147,19 +150,12 @@ const doLookup = async (entities, options, cb) => {
             return buildLookupResult(entity, pollResult.resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, pollResult.elapsedMs);
           }
 
-          // Not yet complete — return pending state for onMessage
-          return {
+          // Timed out — query was cancelled; surface a clear error
+          return buildErrorResult(
             entity,
-            data: {
-              summary: ['⏳ Query Running'],
-              details: {
-                complete: false,
-                statementHandle,
-                elapsedMs: pollResult.elapsedMs,
-                executionStats: { elapsedSeconds: (pollResult.elapsedMs / 1000).toFixed(1) }
-              }
-            }
-          };
+            `Query timed out after ${(pollResult.elapsedMs / 1000).toFixed(1)}s and was cancelled. ` +
+              `Try increasing the Query Timeout setting or simplifying your SQL.`
+          );
         }
 
         // Unexpected status from submit

@@ -106,6 +106,11 @@ polarity.export = PolarityComponent.extend({
         .finally(() => {
           this.set('block._state.checkingStatus', false);
         });
+    },
+    copyText(text) {
+      if (navigator && navigator.clipboard) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
     }
   }
 });
