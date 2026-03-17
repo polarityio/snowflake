@@ -19,7 +19,7 @@
   <div class="d-flex align-items-start justify-content-between">
     <button type="button" class="btn btn-polarity btn-sm" {{action "checkQueryStatus"}}>
       {{#if block._state.checkingStatus}}
-        {{fa-icon "spinner-third" fixedWidth=true spin=true}} Checking…
+        {{fa-icon "circle-notch" fixedWidth=true spin=true}} Checking…
       {{else}}
         {{fa-icon "sync" fixedWidth=true}} Check Query Status
       {{/if}}
@@ -125,9 +125,12 @@
   {{#if block._state.showMetadata}}
     <div class="snow-section-body">
       {{#if details.statementHandle}}
-        <div class="snow-attr-row">
+        <div class="snow-attr-row snow-attr-row-copy">
           <span class="p-key">Statement Handle:</span>
           <span class="p-value snow-mono">{{details.statementHandle}}</span>
+          <button class="btn btn-polarity btn-xs snow-copy-btn" {{action "copyText" details.statementHandle}} title="Copy statement handle">
+            {{fa-icon "copy" fixedWidth=true}}
+          </button>
         </div>
       {{/if}}
       {{#if details.executionStats.elapsedSeconds}}
