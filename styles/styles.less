@@ -1,0 +1,158 @@
+// Snowflake Integration — styles/styles.less
+// All selectors are scoped with .snow- prefix.
+// Theme compatibility: opacity-based for non-semantic elements; explicit colors only for semantic states.
+
+// ── Error banner ────────────────────────────────────────────────────────────
+.snow-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  background-color: rgba(255, 77, 79, 0.12);
+  color: #ff4d4f;
+  border: 1px solid rgba(255, 77, 79, 0.3);
+
+  .snow-error-close {
+    margin-left: auto;
+    cursor: pointer;
+    opacity: 0.7;
+    &:hover { opacity: 1; }
+  }
+}
+
+// ── Truncation warning ──────────────────────────────────────────────────────
+.snow-truncation-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  background-color: rgba(250, 173, 20, 0.1);
+  color: #faad14;
+  border: 1px solid rgba(250, 173, 20, 0.25);
+}
+
+// ── No results / no match ───────────────────────────────────────────────────
+.snow-no-results,
+.snow-no-match {
+  opacity: 0.55;
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+// ── Filter input ────────────────────────────────────────────────────────────
+.snow-filter-container {
+  position: relative;
+  margin-bottom: 6px;
+
+  .snow-clear-filter {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+    opacity: 0.5;
+    &:hover { opacity: 0.9; }
+  }
+}
+
+// ── Paging header ───────────────────────────────────────────────────────────
+.snow-paging-header {
+  margin-bottom: 4px;
+  opacity: 0.65;
+}
+
+// ── Result card ─────────────────────────────────────────────────────────────
+.snow-result-card {
+  padding: 5px 0 6px;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  margin-top: 4px;
+
+  &:first-of-type {
+    border-top: none;
+    margin-top: 0;
+  }
+}
+
+.snow-result-title {
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+
+// ── Attribute rows ───────────────────────────────────────────────────────────
+.snow-attr-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 1px;
+  font-size: 11px;
+}
+
+// ── Mono text (statement handle, etc.) ──────────────────────────────────────
+.snow-mono {
+  font-family: monospace;
+  font-size: 10px;
+  word-break: break-all;
+  opacity: 0.75;
+}
+
+// ── Elapsed / status ────────────────────────────────────────────────────────
+.snow-elapsed {
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+// ── Paging bar ───────────────────────────────────────────────────────────────
+.snow-paging-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.snow-paging-info {
+  font-size: 11px;
+  opacity: 0.6;
+  min-width: 70px;
+  text-align: center;
+}
+
+// ── Collapsible metadata section ────────────────────────────────────────────
+.snow-section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 5px 0 4px;
+  margin-top: 8px;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  user-select: none;
+
+  &:hover { opacity: 0.8; }
+
+  .p-title {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    margin: 0;
+  }
+}
+
+.snow-chevron {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.snow-section-body {
+  padding: 4px 0 6px;
+}

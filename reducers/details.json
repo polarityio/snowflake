@@ -1,0 +1,17 @@
+{
+  "root": {
+    "path": "",
+    "on_null": "return_empty"
+  },
+  "pipeline": [
+    { "op": "copy", "from": "results[].title",              "to": "reduced_results.row_titles" },
+    { "op": "copy", "from": "executionStats.numRows",       "to": "reduced_results.num_rows" },
+    { "op": "copy", "from": "executionStats.elapsedSeconds","to": "reduced_results.elapsed_seconds" },
+    { "op": "copy", "from": "executionStats.isTruncated",   "to": "reduced_results.is_truncated" },
+    { "op": "copy", "from": "statementHandle",              "to": "reduced_results.statement_handle" },
+    { "op": "prune", "strategy": "empty_values", "target": "reduced_results" }
+  ],
+  "output": {
+    "result": "$working.reduced_results"
+  }
+}

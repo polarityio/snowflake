@@ -1,0 +1,19 @@
+{
+  "name": "snowflake",
+  "version": "1.0.0",
+  "description": "Polarity integration for Snowflake SQL API",
+  "main": "integration.js",
+  "scripts": {
+    "test": "echo \"No tests configured\" && exit 0"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2",
+    "lodash": "^4.17.21",
+    "postman-request": "^2.88.1-postman.31",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

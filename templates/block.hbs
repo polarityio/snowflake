@@ -1,0 +1,154 @@
+{{! ── Error banner ─────────────────────────────────────────────────────── }}
+{{#if errorMessage}}
+  <div class="snow-error-banner">
+    {{fa-icon "exclamation-triangle" fixedWidth=true}}
+    {{errorMessage}}
+    <span class="snow-error-close" {{action (mut errorMessage) ""}}>{{fa-icon "times" fixedWidth=true}}</span>
+  </div>
+{{/if}}
+
+{{! ── SQL error state ───────────────────────────────────────────────────── }}
+{{#if details.isError}}
+  <div class="snow-error-banner">
+    {{fa-icon "database" fixedWidth=true}}
+    {{details.errorMessage}}
+  </div>
+
+{{! ── Query still running ───────────────────────────────────────────────── }}
+{{else if (not details.complete)}}
+  <div class="d-flex align-items-start justify-content-between">
+    <button type="button" class="btn btn-polarity btn-sm" {{action "checkQueryStatus"}}>
+      {{#if block._state.checkingStatus}}
+        {{fa-icon "spinner-third" fixedWidth=true spin=true}} Checking…
+      {{else}}
+        {{fa-icon "sync" fixedWidth=true}} Check Query Status
+      {{/if}}
+    </button>
+    <span class="snow-elapsed">{{details.executionStats.elapsedSeconds}}s elapsed</span>
+  </div>
+  <div class="mt-1 p-footnote">
+    The query is still running. Click "Check Query Status" to refresh.
+  </div>
+
+{{! ── Complete — no results ─────────────────────────────────────────────── }}
+{{else if (not hasResults)}}
+  <div class="snow-no-results">
+    {{fa-icon "search" fixedWidth=true}} No results found
+  </div>
+
+{{! ── Complete — results ────────────────────────────────────────────────── }}
+{{else}}
+
+  {{! Truncation warning }}
+  {{#if details.executionStats.isTruncated}}
+    <div class="snow-truncation-warning">
+      {{fa-icon "exclamation-triangle" fixedWidth=true}}
+      Results truncated — only the first partition is shown. Increase your Result Limit or refine your SQL query.
+    </div>
+  {{/if}}
+
+  {{! Filter input }}
+  <div class="snow-filter-container">
+    <label class="small ifta-label">Filter results</label>
+    {{input
+      class="ifta-field"
+      value=filterValue
+      placeholder="Type to filter…"
+    }}
+    {{#if (gt filterValue.length 0)}}
+      <span class="snow-clear-filter" {{action (mut filterValue) ""}}>
+        {{fa-icon "times-circle" fixedWidth=true}}
+      </span>
+    {{/if}}
+  </div>
+
+  {{! Paging header }}
+  {{#if hasFilteredResults}}
+    <div class="snow-paging-header">
+      <span class="p-footnote">
+        {{#if showPaging}}
+          Showing {{pagingStartItem}}–{{pagingEndItem}} of {{filteredPagingData.length}}
+        {{else}}
+          {{filteredPagingData.length}} result{{#if (gt filteredPagingData.length 1)}}s{{/if}}
+        {{/if}}
+      </span>
+    </div>
+  {{else}}
+    <div class="p-footnote snow-no-match">No results match filter</div>
+  {{/if}}
+
+  {{! Result rows }}
+  {{#each pagedData as |row|}}
+    <div class="snow-result-card">
+      <div class="p-title snow-result-title">
+        {{fa-icon "table" fixedWidth=true}}
+        {{#if row.title}}
+          {{row.title}}
+        {{else}}
+          Result {{row.index}}
+        {{/if}}
+      </div>
+      {{#each row.attributes as |attr|}}
+        <div class="snow-attr-row">
+          <span class="p-key">{{attr.key}}:</span>
+          <span class="p-value">{{attr.value}}</span>
+        </div>
+      {{/each}}
+    </div>
+  {{/each}}
+
+  {{! Paging controls }}
+  {{#if showPaging}}
+    <div class="snow-paging-bar">
+      <button class="btn paging-btn" {{action "firstPage"}} disabled={{isPrevDisabled}}>{{fa-icon "angle-double-left"}}</button>
+      <button class="btn paging-btn" {{action "prevPage"}} disabled={{isPrevDisabled}}>{{fa-icon "angle-left"}}</button>
+      <span class="snow-paging-info">{{pagingStartItem}}–{{pagingEndItem}} / {{filteredPagingData.length}}</span>
+      <button class="btn paging-btn" {{action "nextPage"}} disabled={{isNextDisabled}}>{{fa-icon "angle-right"}}</button>
+      <button class="btn paging-btn" {{action "lastPage"}} disabled={{isNextDisabled}}>{{fa-icon "angle-double-right"}}</button>
+    </div>
+  {{/if}}
+
+  {{! ── Metadata section (collapsible) ───────────────────────────────────── }}
+  <div class="snow-section-toggle" {{action "toggleSection" "showMetadata"}}>
+    <span class="p-title">
+      {{fa-icon "info-circle" fixedWidth=true}}
+      Query Metadata
+    </span>
+    <span class="snow-chevron">
+      {{#if block._state.showMetadata}}
+        {{fa-icon "chevron-up"}}
+      {{else}}
+        {{fa-icon "chevron-down"}}
+      {{/if}}
+    </span>
+  </div>
+  {{#if block._state.showMetadata}}
+    <div class="snow-section-body">
+      {{#if details.statementHandle}}
+        <div class="snow-attr-row">
+          <span class="p-key">Statement Handle:</span>
+          <span class="p-value snow-mono">{{details.statementHandle}}</span>
+        </div>
+      {{/if}}
+      {{#if details.executionStats.elapsedSeconds}}
+        <div class="snow-attr-row">
+          <span class="p-key">Elapsed:</span>
+          <span class="p-value">{{details.executionStats.elapsedSeconds}}s</span>
+        </div>
+      {{/if}}
+      {{#if details.executionStats.numRows}}
+        <div class="snow-attr-row">
+          <span class="p-key">Rows Returned:</span>
+          <span class="p-value">{{details.executionStats.numRows}}</span>
+        </div>
+      {{/if}}
+      {{#if details.executionStats.partitionCount}}
+        <div class="snow-attr-row">
+          <span class="p-key">Partitions:</span>
+          <span class="p-value">{{details.executionStats.partitionCount}}</span>
+        </div>
+      {{/if}}
+    </div>
+  {{/if}}
+
+{{/if}}
