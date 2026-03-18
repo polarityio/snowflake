@@ -154,48 +154,57 @@
   font-weight: 600;
 }
 
-// ── Table view ───────────────────────────────────────────────────────────────
-.snow-table-wrapper {
-  overflow-x: auto;
-  margin-bottom: 6px;
+// ── Table view — key/value table per result ──────────────────────────────────
+.snow-kv-block {
+  margin-bottom: 8px;
   border: 1px solid rgba(128, 128, 128, 0.2);
   border-radius: 4px;
+  overflow: hidden;
 }
 
-.snow-table {
+.snow-kv-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(128, 128, 128, 0.1);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.snow-kv-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
-  white-space: nowrap;
 }
 
-.snow-th {
-  text-align: left;
-  padding: 4px 8px;
-  font-weight: 600;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: rgba(128, 128, 128, 0.1);
-  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
-  opacity: 0.85;
-}
-
-.snow-td {
-  padding: 3px 8px;
+.snow-kv-row {
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:nth-child(even) {
+    background: rgba(128, 128, 128, 0.04);
+  }
+}
+
+.snow-kv-key {
+  padding: 3px 8px;
+  font-weight: 600;
+  width: 40%;
   vertical-align: top;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
+  opacity: 0.75;
 }
 
-.snow-tr:last-child .snow-td {
-  border-bottom: none;
-}
-
-.snow-tr:nth-child(even) {
-  background: rgba(128, 128, 128, 0.05);
+.snow-kv-val {
+  padding: 3px 8px;
+  width: 60%;
+  vertical-align: top;
+  word-break: break-word;
 }
 .snow-section-toggle {
   display: flex;

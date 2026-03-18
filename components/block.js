@@ -68,13 +68,6 @@ polarity.export = PolarityComponent.extend({
     return this.get('block._state.activeTab') === 'table' ? 'snow-tab snow-tab-active' : 'snow-tab';
   }),
 
-  // ── Table columns (derived from first filtered row's attribute keys) ─────
-  tableColumns: Ember.computed('filteredPagingData.[]', function () {
-    const data = this.get('filteredPagingData');
-    if (!data || data.length === 0) return [];
-    return (data[0].attributes || []).map((a) => a.key);
-  }),
-
   // ── Component lifecycle ───────────────────────────────────────────────────
   init() {
     this._super(...arguments);

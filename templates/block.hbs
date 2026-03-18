@@ -109,28 +109,26 @@
     {{/each}}
   {{/if}}
 
-  {{! ── Table view ─────────────────────────────────────────────────────────── }}
+  {{! ── Table view — key/value table per result ───────────────────────────── }}
   {{#if (eq block._state.activeTab "table")}}
-    <div class="snow-table-wrapper">
-      <table class="snow-table">
-        <thead>
-          <tr>
-            {{#each tableColumns as |col|}}
-              <th class="snow-th">{{col}}</th>
+    {{#each pagedData as |row|}}
+      <div class="snow-kv-block">
+        <div class="snow-kv-header">
+          {{fa-icon "snowflake" fixedWidth=true}}
+          {{#if row.title}}{{row.title}}{{else}}Result {{row.index}}{{/if}}
+        </div>
+        <table class="snow-kv-table">
+          <tbody>
+            {{#each row.attributes as |attr|}}
+              <tr class="snow-kv-row">
+                <td class="snow-kv-key">{{attr.key}}</td>
+                <td class="snow-kv-val">{{attr.value}}</td>
+              </tr>
             {{/each}}
-          </tr>
-        </thead>
-        <tbody>
-          {{#each pagedData as |row|}}
-            <tr class="snow-tr">
-              {{#each row.attributes as |attr|}}
-                <td class="snow-td">{{attr.value}}</td>
-              {{/each}}
-            </tr>
-          {{/each}}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
+    {{/each}}
   {{/if}}
 
   {{! Paging controls }}
