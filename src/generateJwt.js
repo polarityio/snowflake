@@ -42,12 +42,61 @@ function normalizePem(pem) {
 
 /**
  * Extracts the public key in DER format from the PEM private key.
+ * Tries PKCS#8 (preferred) then PKCS#1 (legacy fallback) to maximise compatibility.
  */
 function extractPublicKeyDer(privateKeyPem, passphrase) {
   const normalizedPem = normalizePem(privateKeyPem);
-  const keyObject = passphrase
-    ? crypto.createPrivateKey({ key: normalizedPem, passphrase })
-    : crypto.createPrivateKey(normalizedPem);
+  const pemHeader = normalizedPem.split('\n')[0] || '(empty)';
+
+  const tryLoad = (opts) => crypto.createPrivateKey(opts);
+
+  let keyObject;
+  try {
+    // Primary: auto-detect (works for PKCS#8 encrypted/unencrypted, PKCS#1 unencrypted)
+    keyObject = passphrase
+      ? tryLoad({ key: normalizedPem, passphrase, format: 'pem' })
+      : tryLoad({ key: normalizedPem, format: 'pem' });
+  } catch (primaryErr) {
+    // Fallback: explicit PKCS#1 unencrypted (no passphrase) — for BEGIN RSA PRIVATE KEY
+    if (!passphrase) {
+      try {
+        keyObject = tryLoad({ key: normalizedPem, format: 'pem', type: 'pkcs1' });
+      } catch (_) {
+        // fall through to the descriptive error below
+      }
+    }
+    if (!keyObject) {
+      // Build a user-actionable error message based on the PEM header
+      const isEncryptedPkcs1 =
+        pemHeader.includes('RSA PRIVATE KEY') &&
+        normalizedPem.includes('Proc-Type: 4,ENCRYPTED');
+      const isLegacyCipher =
+        normalizedPem.includes('DEK-Info: DES-EDE3') || normalizedPem.includes('DEK-Info: DES');
+
+      let hint =
+        `Private key header: "${pemHeader}". ` +
+        'This Node.js version (18+) uses OpenSSL 3.x which dropped legacy cipher support. ';
+
+      if (isEncryptedPkcs1 || isLegacyCipher) {
+        hint +=
+          'Your key is encrypted with a legacy algorithm (3DES/DES). ' +
+          'Regenerate it using AES-256 PKCS#8: ' +
+          'openssl pkcs8 -topk8 -v2 aes256 -in your_old_key.pem -out rsa_key.p8';
+      } else if (pemHeader.includes('RSA PRIVATE KEY')) {
+        hint +=
+          'Your PKCS#1 key may need to be converted to PKCS#8: ' +
+          'openssl pkcs8 -topk8 -nocrypt -in your_key.pem -out rsa_key.p8';
+      } else {
+        hint +=
+          `Original error: ${primaryErr.message}. ` +
+          'Ensure your key is a Snowflake-compatible RSA PKCS#8 key generated with: ' +
+          'openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 aes256 -out rsa_key.p8';
+      }
+
+      throw new Error(hint);
+    }
+  }
+
   return crypto.createPublicKey(keyObject).export({ type: 'spki', format: 'der' });
 }
 
@@ -79,11 +128,20 @@ function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassph
     exp
   };
 
-  const keyObject = privateKeyPassphrase
-    ? crypto.createPrivateKey({ key: normalizedKey, passphrase: privateKeyPassphrase })
-    : crypto.createPrivateKey(normalizedKey);
+  let signingKey;
+  try {
+    signingKey = privateKeyPassphrase
+      ? crypto.createPrivateKey({ key: normalizedKey, passphrase: privateKeyPassphrase, format: 'pem' })
+      : crypto.createPrivateKey({ key: normalizedKey, format: 'pem' });
+  } catch (e) {
+    if (!privateKeyPassphrase) {
+      signingKey = crypto.createPrivateKey({ key: normalizedKey, format: 'pem', type: 'pkcs1' });
+    } else {
+      throw e;
+    }
+  }
 
-  const token = jwt.sign(payload, keyObject, { algorithm: 'RS256' });
+  const token = jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 
   return { token, expiresAt: (exp - JWT_REFRESH_BUFFER_SECONDS) * 1000 };
 }

@@ -70,6 +70,19 @@ async function getToken(options) {
   }
 
   Logger.debug('Generating new JWT for key-pair auth');
+  const rawPrivateKey = getOpt(options, 'privateKey');
+  const normalizedForDiag = (rawPrivateKey || '').replace(/\\n/g, '\n').replace(/\\r/g, '').trim();
+  const pemHeader = normalizedForDiag.split('\n')[0] || '(empty)';
+  Logger.info(
+    {
+      pemHeader,
+      keyLength: normalizedForDiag.length,
+      hasPassphrase: !!(getOpt(options, 'privateKeyPassphrase')),
+      username: getOpt(options, 'username'),
+      accountIdentifier: getOpt(options, 'accountIdentifier')
+    },
+    'getToken key-pair diagnostics'
+  );
   const { token, expiresAt } = generateJwt({
     accountIdentifier: getOpt(options, 'accountIdentifier'),
     username: getOpt(options, 'username'),
