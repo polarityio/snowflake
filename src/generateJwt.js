@@ -28,12 +28,26 @@ function computePublicKeyFingerprint(publicKeyDer) {
 }
 
 /**
+ * Normalises a PEM string for use with Node.js crypto.
+ * Polarity may store multiline password fields with literal \n sequences
+ * instead of real newline characters. This restores them.
+ */
+function normalizePem(pem) {
+  if (!pem) return '';
+  return pem
+    .replace(/\\n/g, '\n')  // literal \n → real newline
+    .replace(/\\r/g, '')    // strip any \r
+    .trim();
+}
+
+/**
  * Extracts the public key in DER format from the PEM private key.
  */
 function extractPublicKeyDer(privateKeyPem, passphrase) {
+  const normalizedPem = normalizePem(privateKeyPem);
   const keyObject = passphrase
-    ? crypto.createPrivateKey({ key: privateKeyPem, passphrase })
-    : crypto.createPrivateKey(privateKeyPem);
+    ? crypto.createPrivateKey({ key: normalizedPem, passphrase })
+    : crypto.createPrivateKey(normalizedPem);
   return crypto.createPublicKey(keyObject).export({ type: 'spki', format: 'der' });
 }
 
@@ -48,10 +62,11 @@ function extractPublicKeyDer(privateKeyPem, passphrase) {
  * @returns {{ token: string, expiresAt: number }} expiresAt is epoch milliseconds
  */
 function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassphrase }) {
+  const normalizedKey = normalizePem(privateKey);
   const account = normalizeAccountForJwt(accountIdentifier);
   const user = username.toUpperCase();
 
-  const publicKeyDer = extractPublicKeyDer(privateKey, privateKeyPassphrase || undefined);
+  const publicKeyDer = extractPublicKeyDer(normalizedKey, privateKeyPassphrase || undefined);
   const fingerprint = computePublicKeyFingerprint(publicKeyDer);
 
   const iat = Math.floor(Date.now() / 1000);
@@ -65,8 +80,8 @@ function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassph
   };
 
   const keyObject = privateKeyPassphrase
-    ? crypto.createPrivateKey({ key: privateKey, passphrase: privateKeyPassphrase })
-    : crypto.createPrivateKey(privateKey);
+    ? crypto.createPrivateKey({ key: normalizedKey, passphrase: privateKeyPassphrase })
+    : crypto.createPrivateKey(normalizedKey);
 
   const token = jwt.sign(payload, keyObject, { algorithm: 'RS256' });
 
