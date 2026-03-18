@@ -9,7 +9,7 @@ const request = require('postman-request');
  * Throws a structured error object for non-2xx responses except 202 (async in-progress).
  * Returns { status, body } for 200 and 202.
  */
-function makeRequest({ method, url, token, authType, body }) {
+function makeRequest({ method, url, token, authType, body, logger }) {
   return new Promise((resolve, reject) => {
     const options = {
       method,
@@ -18,7 +18,7 @@ function makeRequest({ method, url, token, authType, body }) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': 'polarity-snowflake-integration/3.0.3',
+        'User-Agent': 'polarity-snowflake-integration/3.0.4',
         Authorization: `Bearer ${token}`,
         'X-Snowflake-Authorization-Token-Type': authType
       }
@@ -26,12 +26,35 @@ function makeRequest({ method, url, token, authType, body }) {
 
     if (body) options.body = body;
 
+    if (logger) {
+      logger.trace(
+        { method, url, authType, hasBody: !!body, bodyStatement: body && body.statement },
+        'Snowflake HTTP request'
+      );
+    }
+
     request(options, (err, response, responseBody) => {
       if (err) {
+        if (logger) logger.error({ url, err: err.message }, 'Snowflake HTTP network error');
         return reject({ message: err.message, isNetworkError: true });
       }
 
       const status = response.statusCode;
+
+      if (logger) {
+        logger.trace(
+          {
+            url,
+            status,
+            statementHandle: responseBody && responseBody.statementHandle,
+            numRows: responseBody && responseBody.resultSetMetaData && responseBody.resultSetMetaData.numRows,
+            dataLength: responseBody && responseBody.data && responseBody.data.length,
+            message: responseBody && responseBody.message,
+            code: responseBody && responseBody.code
+          },
+          'Snowflake HTTP response'
+        );
+      }
 
       if (status === 200 || status === 202) {
         return resolve({ status, body: responseBody });
@@ -84,28 +107,28 @@ function makeRequest({ method, url, token, authType, body }) {
  * Submits a SQL statement to the Snowflake SQL API.
  * Always uses async=true so we get a handle immediately.
  */
-async function submitStatement({ baseUrl, token, authType, body }) {
+async function submitStatement({ baseUrl, token, authType, body, logger }) {
   const requestId = uuidv4();
   const url = `${baseUrl}/api/v2/statements?requestId=${requestId}&async=true`;
-  return makeRequest({ method: 'POST', url, token, authType, body });
+  return makeRequest({ method: 'POST', url, token, authType, body, logger });
 }
 
 /**
  * Polls for the result of an async statement.
  * Returns { status: 200, body } when complete or { status: 202 } when still running.
  */
-async function pollStatement({ baseUrl, token, authType, statementHandle }) {
+async function pollStatement({ baseUrl, token, authType, statementHandle, logger }) {
   const url = `${baseUrl}/api/v2/statements/${statementHandle}`;
-  return makeRequest({ method: 'GET', url, token, authType });
+  return makeRequest({ method: 'GET', url, token, authType, logger });
 }
 
 /**
  * Cancels an in-flight statement. Non-fatal — errors are swallowed.
  */
-async function cancelStatement({ baseUrl, token, authType, statementHandle }) {
+async function cancelStatement({ baseUrl, token, authType, statementHandle, logger }) {
   const url = `${baseUrl}/api/v2/statements/${statementHandle}/cancel`;
   try {
-    await makeRequest({ method: 'POST', url, token, authType });
+    await makeRequest({ method: 'POST', url, token, authType, logger });
   } catch (_) {
     // Cancel errors are non-fatal
   }

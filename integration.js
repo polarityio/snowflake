@@ -51,7 +51,7 @@ async function getToken(options) {
 async function pollToCompletion(statementHandle, baseUrl, token, authType, startTime) {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     await sleep(POLL_INTERVALS_MS[attempt]);
-    const result = await pollStatement({ baseUrl, token, authType, statementHandle });
+    const result = await pollStatement({ baseUrl, token, authType, statementHandle, logger: Logger });
     if (result.status === 200) {
       return { complete: true, resultSet: result.body, elapsedMs: Date.now() - startTime };
     }
@@ -109,6 +109,23 @@ const doLookup = async (entities, options, cb) => {
   const itemTitleAttr = ((options.itemTitleAttribute && options.itemTitleAttribute.value) || '').trim().toUpperCase();
   const maxSummaryItems = Number((options.maxSummaryItems && options.maxSummaryItems.value)) || 3;
 
+  Logger.trace(
+    {
+      baseUrl,
+      authType,
+      bindingType,
+      query,
+      queryTimeout,
+      resultLimit,
+      summaryAttrList,
+      detailAttrList,
+      itemTitleAttr,
+      maxSummaryItems,
+      tokenLength: token ? token.length : 0
+    },
+    'doLookup resolved options'
+  );
+
   const lookupResults = await Promise.all(
     entities.map(async (entity) => {
       const startTime = Date.now();
@@ -120,6 +137,9 @@ const doLookup = async (entities, options, cb) => {
           return { entity, data: null };
         }
         const bindings = buildBindings(query, entity.value, bindingType);
+
+        Logger.trace({ entity: entity.value, bindings }, 'Built bindings for entity');
+
         const body = {
           statement: query,
           timeout: queryTimeout,
@@ -135,23 +155,36 @@ const doLookup = async (entities, options, cb) => {
         if (options.schema && options.schema.value) body.schema = options.schema.value;
         if (options.role && options.role.value) body.role = options.role.value;
 
-        const submitResult = await submitStatement({ baseUrl, token, authType, body });
+        Logger.trace({ entity: entity.value, requestBody: body }, 'Submitting statement to Snowflake');
+
+        const submitResult = await submitStatement({ baseUrl, token, authType, body, logger: Logger });
+
+        Logger.trace(
+          { entity: entity.value, status: submitResult.status, body: submitResult.body },
+          'Statement submit response'
+        );
 
         if (submitResult.status === 200) {
-          // Synchronous result
-          return buildLookupResult(entity, submitResult.body, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, Date.now() - startTime);
+          const numRows = submitResult.body?.resultSetMetaData?.numRows;
+          const columnNames = (submitResult.body?.resultSetMetaData?.rowType || []).map((c) => c.name);
+          Logger.trace({ entity: entity.value, numRows, columnNames }, 'Synchronous result received');
+          return buildLookupResult(entity, submitResult.body, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, Date.now() - startTime, Logger);
         }
 
         if (submitResult.status === 202) {
           // Async — poll
           statementHandle = submitResult.body.statementHandle;
+          Logger.trace({ entity: entity.value, statementHandle }, 'Async execution — beginning poll');
           const pollResult = await pollToCompletion(statementHandle, baseUrl, token, authType, startTime);
 
           if (pollResult.complete) {
-            return buildLookupResult(entity, pollResult.resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, pollResult.elapsedMs);
+            const numRows = pollResult.resultSet?.resultSetMetaData?.numRows;
+            const columnNames = (pollResult.resultSet?.resultSetMetaData?.rowType || []).map((c) => c.name);
+            Logger.trace({ entity: entity.value, numRows, columnNames, elapsedMs: pollResult.elapsedMs }, 'Poll complete — result received');
+            return buildLookupResult(entity, pollResult.resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, pollResult.elapsedMs, Logger);
           }
 
-          // Not yet complete — return pending state for onMessage
+          Logger.trace({ entity: entity.value, statementHandle, elapsedMs: pollResult.elapsedMs }, 'Poll budget exhausted — returning pending state');
           return {
             entity,
             data: {
@@ -180,14 +213,39 @@ const doLookup = async (entities, options, cb) => {
   cb(null, lookupResults);
 };
 
-function buildLookupResult(entity, resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, elapsedMs) {
+function buildLookupResult(entity, resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, elapsedMs, Logger) {
+  Logger.trace(
+    {
+      entity: entity.value,
+      resultSetMetaData: resultSet?.resultSetMetaData,
+      dataRowCount: resultSet?.data?.length ?? 0,
+      statementHandle: resultSet?.statementHandle,
+      message: resultSet?.message
+    },
+    'buildLookupResult — raw resultSet metadata'
+  );
+
   const rows = mapResultRows(resultSet, detailAttrList, itemTitleAttr);
 
+  Logger.trace(
+    {
+      entity: entity.value,
+      mappedRowCount: rows.length,
+      detailAttrList,
+      itemTitleAttr,
+      firstRow: rows[0] || null
+    },
+    'buildLookupResult — after mapResultRows'
+  );
+
   if (rows.length === 0) {
+    Logger.trace({ entity: entity.value }, 'buildLookupResult — 0 rows mapped → returning null (no overlay)');
     return { entity, data: null };
   }
 
   const summaryTags = buildSummaryTags(rows, summaryAttrList, maxSummaryItems);
+
+  Logger.trace({ entity: entity.value, summaryTags }, 'buildLookupResult — summary tags built');
   const { resultSetMetaData, statementHandle, message } = resultSet;
   const partitionCount = (resultSetMetaData?.partitionInfo || []).length;
   const isTruncated = partitionCount > 1;
@@ -247,7 +305,7 @@ const onMessage = async (payload, options, cb) => {
   const { statementHandle } = payload;
 
   try {
-    const result = await pollStatement({ baseUrl, token, authType, statementHandle });
+    const result = await pollStatement({ baseUrl, token, authType, statementHandle, logger: Logger });
 
     if (result.status === 200) {
       const summaryAttrList = parseAttributeList(options.summaryAttributes.value);
