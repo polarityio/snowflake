@@ -9,6 +9,25 @@ let Logger;
 // JWT cache: { token, expiresAt }
 let jwtCache = null;
 
+/**
+ * Normalizes a Polarity option value regardless of how the server delivers it.
+ *
+ * Different Polarity server versions pass options in different shapes:
+ *   - Plain value:               options.key  === 'the string'
+ *   - Single-wrapped:            options.key  === { value: 'the string' }
+ *   - Double-wrapped (selects):  options.key  === { value: { value: 'oauth', label: '...' } }
+ *
+ * This helper always returns the innermost scalar value (or '' if absent).
+ */
+function getOpt(options, key) {
+  const raw = options[key];
+  if (raw === null || raw === undefined) return '';
+  if (typeof raw !== 'object') return raw; // plain string/number/boolean
+  const v = raw.value;
+  if (v !== null && v !== undefined && typeof v === 'object' && 'value' in v) return v.value; // double-wrapped
+  return v ?? ''; // single-wrapped
+}
+
 const MAX_POLL_ATTEMPTS = 5;
 const POLL_INTERVALS_MS = [500, 1000, 2000, 3000, 4000];
 
@@ -22,9 +41,9 @@ const startup = (logger) => {
  * For Key-Pair JWT: generates a fresh JWT or returns the cached one if still valid.
  */
 async function getToken(options) {
-  const authType = options.authType.value;
+  const authType = getOpt(options, 'authType');
   if (authType === 'oauth') {
-    return options.oauthToken.value;
+    return getOpt(options, 'oauthToken');
   }
 
   // Key-pair JWT — use cache unless expired
@@ -35,10 +54,10 @@ async function getToken(options) {
 
   Logger.debug('Generating new JWT for key-pair auth');
   const { token, expiresAt } = generateJwt({
-    accountIdentifier: options.accountIdentifier.value,
-    username: options.username.value,
-    privateKey: options.privateKey.value,
-    privateKeyPassphrase: (options.privateKeyPassphrase && options.privateKeyPassphrase.value) || ''
+    accountIdentifier: getOpt(options, 'accountIdentifier'),
+    username: getOpt(options, 'username'),
+    privateKey: getOpt(options, 'privateKey'),
+    privateKeyPassphrase: getOpt(options, 'privateKeyPassphrase')
   });
   jwtCache = { token, expiresAt };
   return token;
@@ -97,28 +116,25 @@ const doLookup = async (entities, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials in integration settings.', err: readable });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier.value);
-  const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
-  const bindingType = options.bindingType.value;
-  const query = (options.query && options.query.value) || '';
+  const baseUrl = buildBaseUrl(getOpt(options, 'accountIdentifier'));
+  const authType = getOpt(options, 'authType') === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
+  const bindingType = getOpt(options, 'bindingType');
+  const query = getOpt(options, 'query');
 
-  // Diagnostic: log the raw options.query structure to catch value-wrapping issues
-  Logger.info(
+  Logger.trace(
     {
-      'options.query': options.query,
-      'options.query.value': options.query && options.query.value,
-      queryResolved: query,
-      allOptionKeys: Object.keys(options)
+      'options.query (raw)': options.query,
+      queryResolved: query
     },
     'doLookup options.query diagnostic'
   );
-  const queryTimeout = Number(options.queryTimeout.value) || 30;
-  const resultLimit = Number(options.resultLimit.value) || 100;
+  const queryTimeout = Number(getOpt(options, 'queryTimeout')) || 30;
+  const resultLimit = Number(getOpt(options, 'resultLimit')) || 100;
 
-  const summaryAttrList = parseAttributeList(options.summaryAttributes.value);
-  const detailAttrList = parseAttributeList(options.detailAttributes.value);
-  const itemTitleAttr = ((options.itemTitleAttribute && options.itemTitleAttribute.value) || '').trim().toUpperCase();
-  const maxSummaryItems = Number((options.maxSummaryItems && options.maxSummaryItems.value)) || 3;
+  const summaryAttrList = parseAttributeList(getOpt(options, 'summaryAttributes'));
+  const detailAttrList = parseAttributeList(getOpt(options, 'detailAttributes'));
+  const itemTitleAttr = (getOpt(options, 'itemTitleAttribute') || '').trim().toUpperCase();
+  const maxSummaryItems = Number(getOpt(options, 'maxSummaryItems')) || 3;
 
   Logger.trace(
     {
@@ -144,15 +160,7 @@ const doLookup = async (entities, options, cb) => {
 
       try {
         if (!query) {
-          Logger.warn(
-            {
-              entity: entity.value,
-              rawOptionsQuery: options.query,
-              rawQueryValue: options.query && options.query.value,
-              hint: 'If query is set in the UI, try re-saving integration settings on the Polarity server to flush the options cache.'
-            },
-            'No SQL query configured — skipping lookup'
-          );
+          Logger.warn({ entity: entity.value }, 'No SQL query configured — skipping lookup');
           return { entity, data: null };
         }
         const bindings = buildBindings(query, entity.value, bindingType);
@@ -169,10 +177,10 @@ const doLookup = async (entities, options, cb) => {
           },
           bindings
         };
-        if (options.warehouse && options.warehouse.value) body.warehouse = options.warehouse.value;
-        if (options.database && options.database.value) body.database = options.database.value;
-        if (options.schema && options.schema.value) body.schema = options.schema.value;
-        if (options.role && options.role.value) body.role = options.role.value;
+        if (getOpt(options, 'warehouse')) body.warehouse = getOpt(options, 'warehouse');
+        if (getOpt(options, 'database')) body.database = getOpt(options, 'database');
+        if (getOpt(options, 'schema')) body.schema = getOpt(options, 'schema');
+        if (getOpt(options, 'role')) body.role = getOpt(options, 'role');
 
         Logger.trace({ entity: entity.value, requestBody: body }, 'Submitting statement to Snowflake');
 
@@ -319,18 +327,18 @@ const onMessage = async (payload, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials.' });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier.value);
-  const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
+  const baseUrl = buildBaseUrl(getOpt(options, 'accountIdentifier'));
+  const authType = getOpt(options, 'authType') === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const { statementHandle } = payload;
 
   try {
     const result = await pollStatement({ baseUrl, token, authType, statementHandle, logger: Logger });
 
     if (result.status === 200) {
-      const summaryAttrList = parseAttributeList(options.summaryAttributes.value);
-      const detailAttrList = parseAttributeList(options.detailAttributes.value);
-      const itemTitleAttr = ((options.itemTitleAttribute && options.itemTitleAttribute.value) || '').trim().toUpperCase();
-      const maxSummaryItems = Number((options.maxSummaryItems && options.maxSummaryItems.value)) || 3;
+      const summaryAttrList = parseAttributeList(getOpt(options, 'summaryAttributes'));
+      const detailAttrList = parseAttributeList(getOpt(options, 'detailAttributes'));
+      const itemTitleAttr = (getOpt(options, 'itemTitleAttribute') || '').trim().toUpperCase();
+      const maxSummaryItems = Number(getOpt(options, 'maxSummaryItems')) || 3;
 
       const rows = mapResultRows(result.body, detailAttrList, itemTitleAttr);
       const summaryTags = buildSummaryTags(rows, summaryAttrList, maxSummaryItems);
@@ -371,28 +379,25 @@ const onMessage = async (payload, options, cb) => {
 const validateOptions = async (options, callback) => {
   const errors = [];
 
-  // Account identifier required
-  if (!options.accountIdentifier || !options.accountIdentifier.value) {
+  if (!getOpt(options, 'accountIdentifier')) {
     errors.push({ key: 'accountIdentifier', message: 'You must provide a Snowflake Account Identifier.' });
   }
 
-  // Auth-type-specific validation
-  const authType = options.authType?.value?.value || options.authType?.value;
+  const authType = getOpt(options, 'authType');
   if (authType === 'oauth') {
-    if (!options.oauthToken || !options.oauthToken.value) {
+    if (!getOpt(options, 'oauthToken')) {
       errors.push({ key: 'oauthToken', message: 'An OAuth Token is required when Authentication Type is set to "OAuth Token".' });
     }
   } else if (authType === 'keypair') {
-    if (!options.username || !options.username.value) {
+    if (!getOpt(options, 'username')) {
       errors.push({ key: 'username', message: 'A Username is required for Key-Pair JWT authentication.' });
     }
-    if (!options.privateKey || !options.privateKey.value) {
+    if (!getOpt(options, 'privateKey')) {
       errors.push({ key: 'privateKey', message: 'A Private Key (PEM) is required for Key-Pair JWT authentication.' });
     }
   }
 
-  // SQL query required
-  if (!options.query || !options.query.value) {
+  if (!getOpt(options, 'query')) {
     errors.push({ key: 'query', message: 'You must provide a SQL Query Template.' });
   }
 
