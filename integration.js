@@ -41,9 +41,26 @@ const startup = (logger) => {
  * For Key-Pair JWT: generates a fresh JWT or returns the cached one if still valid.
  */
 async function getToken(options) {
+  const authTypeRaw = options.authType;
   const authType = getOpt(options, 'authType');
+  const oauthTokenRaw = options.oauthToken;
+  const oauthTokenResolved = getOpt(options, 'oauthToken');
+
+  Logger.info(
+    {
+      authTypeRaw: typeof authTypeRaw === 'object' ? JSON.stringify(authTypeRaw) : authTypeRaw,
+      authTypeResolved: authType,
+      authTypeMatch: authType === 'oauth',
+      oauthTokenRawType: typeof oauthTokenRaw,
+      oauthTokenRawIsObject: typeof oauthTokenRaw === 'object',
+      oauthTokenRawObjectKeys: typeof oauthTokenRaw === 'object' && oauthTokenRaw ? Object.keys(oauthTokenRaw) : null,
+      oauthTokenResolvedLength: oauthTokenResolved ? oauthTokenResolved.length : 0
+    },
+    'getToken diagnostics'
+  );
+
   if (authType === 'oauth') {
-    return getOpt(options, 'oauthToken');
+    return oauthTokenResolved;
   }
 
   // Key-pair JWT — use cache unless expired
