@@ -101,6 +101,17 @@ const doLookup = async (entities, options, cb) => {
   const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const bindingType = options.bindingType.value;
   const query = (options.query && options.query.value) || '';
+
+  // Diagnostic: log the raw options.query structure to catch value-wrapping issues
+  Logger.info(
+    {
+      'options.query': options.query,
+      'options.query.value': options.query && options.query.value,
+      queryResolved: query,
+      allOptionKeys: Object.keys(options)
+    },
+    'doLookup options.query diagnostic'
+  );
   const queryTimeout = Number(options.queryTimeout.value) || 30;
   const resultLimit = Number(options.resultLimit.value) || 100;
 
@@ -133,7 +144,15 @@ const doLookup = async (entities, options, cb) => {
 
       try {
         if (!query) {
-          Logger.warn({ entity: entity.value }, 'No SQL query configured — skipping lookup');
+          Logger.warn(
+            {
+              entity: entity.value,
+              rawOptionsQuery: options.query,
+              rawQueryValue: options.query && options.query.value,
+              hint: 'If query is set in the UI, try re-saving integration settings on the Polarity server to flush the options cache.'
+            },
+            'No SQL query configured — skipping lookup'
+          );
           return { entity, data: null };
         }
         const bindings = buildBindings(query, entity.value, bindingType);
