@@ -59,13 +59,21 @@ polarity.export = PolarityComponent.extend({
     return (this.get('filteredPagingData.length') || 0) > this.get('pageSize');
   }),
 
+  // ── Table columns (derived from first filtered row's attribute keys) ─────
+  tableColumns: Ember.computed('filteredPagingData.[]', function () {
+    const data = this.get('filteredPagingData');
+    if (!data || data.length === 0) return [];
+    return (data[0].attributes || []).map((a) => a.key);
+  }),
+
   // ── Component lifecycle ───────────────────────────────────────────────────
   init() {
     this._super(...arguments);
     if (!this.get('block._state')) {
       this.set('block._state', {
         showMetadata: false,
-        checkingStatus: false
+        checkingStatus: false,
+        activeTab: 'cards'
       });
     }
   },
@@ -92,6 +100,9 @@ polarity.export = PolarityComponent.extend({
     toggleSection(key) {
       const path = `block._state.${key}`;
       this.set(path, !this.get(path));
+    },
+    switchTab(tab) {
+      this.set('block._state.activeTab', tab);
     },
     checkQueryStatus() {
       this.set('block._state.checkingStatus', true);

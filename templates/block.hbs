@@ -47,6 +47,22 @@
     </div>
   {{/if}}
 
+  {{! Tab switcher }}
+  <div class="snow-tabs">
+    <button
+      class="snow-tab {{#if (eq block._state.activeTab "cards")}}snow-tab-active{{/if}}"
+      {{action "switchTab" "cards"}}
+    >
+      {{fa-icon "th-list" fixedWidth=true}} Cards
+    </button>
+    <button
+      class="snow-tab {{#if (eq block._state.activeTab "table")}}snow-tab-active{{/if}}"
+      {{action "switchTab" "table"}}
+    >
+      {{fa-icon "table" fixedWidth=true}} Table
+    </button>
+  </div>
+
   {{! Filter input }}
   <div class="snow-filter-container">
     <label class="small ifta-label">Filter results</label>
@@ -77,25 +93,51 @@
     <div class="p-footnote snow-no-match">No results match filter</div>
   {{/if}}
 
-  {{! Result rows }}
-  {{#each pagedData as |row|}}
-    <div class="snow-result-card">
-      <div class="p-title snow-result-title">
-        {{fa-icon "table" fixedWidth=true}}
-        {{#if row.title}}
-          {{row.title}}
-        {{else}}
-          Result {{row.index}}
-        {{/if}}
-      </div>
-      {{#each row.attributes as |attr|}}
-        <div class="snow-attr-row">
-          <span class="p-key">{{attr.key}}:</span>
-          <span class="p-value">{{attr.value}}</span>
+  {{! ── Cards view ─────────────────────────────────────────────────────────── }}
+  {{#if (eq block._state.activeTab "cards")}}
+    {{#each pagedData as |row|}}
+      <div class="snow-result-card">
+        <div class="p-title snow-result-title">
+          {{fa-icon "table" fixedWidth=true}}
+          {{#if row.title}}
+            {{row.title}}
+          {{else}}
+            Result {{row.index}}
+          {{/if}}
         </div>
-      {{/each}}
+        {{#each row.attributes as |attr|}}
+          <div class="snow-attr-row">
+            <span class="p-key">{{attr.key}}:</span>
+            <span class="p-value">{{attr.value}}</span>
+          </div>
+        {{/each}}
+      </div>
+    {{/each}}
+  {{/if}}
+
+  {{! ── Table view ─────────────────────────────────────────────────────────── }}
+  {{#if (eq block._state.activeTab "table")}}
+    <div class="snow-table-wrapper">
+      <table class="snow-table">
+        <thead>
+          <tr>
+            {{#each tableColumns as |col|}}
+              <th class="snow-th">{{col}}</th>
+            {{/each}}
+          </tr>
+        </thead>
+        <tbody>
+          {{#each pagedData as |row|}}
+            <tr class="snow-tr">
+              {{#each row.attributes as |attr|}}
+                <td class="snow-td">{{attr.value}}</td>
+              {{/each}}
+            </tr>
+          {{/each}}
+        </tbody>
+      </table>
     </div>
-  {{/each}}
+  {{/if}}
 
   {{! Paging controls }}
   {{#if showPaging}}
