@@ -77,7 +77,7 @@ function buildBaseUrl(accountIdentifier) {
  * where every position receives the same entity value.
  */
 function buildBindings(query, entityValue, bindingType) {
-  const matches = query.match(/\?/g) || [];
+  const matches = (query || '').match(/\?/g) || [];
   const bindings = {};
   matches.forEach((_, i) => {
     bindings[String(i + 1)] = { type: bindingType, value: entityValue };
@@ -97,10 +97,10 @@ const doLookup = async (entities, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials in integration settings.', err: readable });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier);
+  const baseUrl = buildBaseUrl(options.accountIdentifier.value);
   const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const bindingType = options.bindingType.value;
-  const query = options.query.value;
+  const query = (options.query && options.query.value) || '';
   const queryTimeout = Number(options.queryTimeout.value) || 30;
   const resultLimit = Number(options.resultLimit.value) || 100;
 
@@ -115,6 +115,10 @@ const doLookup = async (entities, options, cb) => {
       let statementHandle;
 
       try {
+        if (!query) {
+          Logger.warn({ entity: entity.value }, 'No SQL query configured — skipping lookup');
+          return { entity, data: null };
+        }
         const bindings = buildBindings(query, entity.value, bindingType);
         const body = {
           statement: query,
@@ -238,7 +242,7 @@ const onMessage = async (payload, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials.' });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier);
+  const baseUrl = buildBaseUrl(options.accountIdentifier.value);
   const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const { statementHandle } = payload;
 
