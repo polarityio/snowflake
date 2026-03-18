@@ -18,7 +18,7 @@ function makeRequest({ method, url, token, authType, body, logger }) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': 'polarity-snowflake-integration/3.1.2',
+        'User-Agent': 'polarity-snowflake-integration/3.1.3',
         Authorization: `Bearer ${token}`,
         'X-Snowflake-Authorization-Token-Type': authType
       }

@@ -49,16 +49,10 @@
 
   {{! Tab switcher }}
   <div class="snow-tabs">
-    <button
-      class="snow-tab {{#if (eq block._state.activeTab "cards")}}snow-tab-active{{/if}}"
-      {{action "switchTab" "cards"}}
-    >
+    <button class={{cardsTabClass}} {{action "switchTab" "cards"}}>
       {{fa-icon "th-list" fixedWidth=true}} Cards
     </button>
-    <button
-      class="snow-tab {{#if (eq block._state.activeTab "table")}}snow-tab-active{{/if}}"
-      {{action "switchTab" "table"}}
-    >
+    <button class={{tableTabClass}} {{action "switchTab" "table"}}>
       {{fa-icon "table" fixedWidth=true}} Table
     </button>
   </div>

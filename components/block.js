@@ -59,6 +59,15 @@ polarity.export = PolarityComponent.extend({
     return (this.get('filteredPagingData.length') || 0) > this.get('pageSize');
   }),
 
+  // ── Tab class helpers ─────────────────────────────────────────────────────
+  cardsTabClass: Ember.computed('block._state.activeTab', function () {
+    return this.get('block._state.activeTab') === 'cards' ? 'snow-tab snow-tab-active' : 'snow-tab';
+  }),
+
+  tableTabClass: Ember.computed('block._state.activeTab', function () {
+    return this.get('block._state.activeTab') === 'table' ? 'snow-tab snow-tab-active' : 'snow-tab';
+  }),
+
   // ── Table columns (derived from first filtered row's attribute keys) ─────
   tableColumns: Ember.computed('filteredPagingData.[]', function () {
     const data = this.get('filteredPagingData');
