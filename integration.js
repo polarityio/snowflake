@@ -24,7 +24,7 @@ const startup = (logger) => {
 async function getToken(options) {
   const authType = options.authType.value;
   if (authType === 'oauth') {
-    return options.oauthToken;
+    return options.oauthToken.value;
   }
 
   // Key-pair JWT — use cache unless expired
@@ -35,10 +35,10 @@ async function getToken(options) {
 
   Logger.debug('Generating new JWT for key-pair auth');
   const { token, expiresAt } = generateJwt({
-    accountIdentifier: options.accountIdentifier,
-    username: options.username,
-    privateKey: options.privateKey,
-    privateKeyPassphrase: options.privateKeyPassphrase || ''
+    accountIdentifier: options.accountIdentifier.value,
+    username: options.username.value,
+    privateKey: options.privateKey.value,
+    privateKeyPassphrase: (options.privateKeyPassphrase && options.privateKeyPassphrase.value) || ''
   });
   jwtCache = { token, expiresAt };
   return token;
@@ -100,14 +100,14 @@ const doLookup = async (entities, options, cb) => {
   const baseUrl = buildBaseUrl(options.accountIdentifier);
   const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const bindingType = options.bindingType.value;
-  const query = options.query;
-  const queryTimeout = Number(options.queryTimeout) || 30;
-  const resultLimit = Number(options.resultLimit) || 100;
+  const query = options.query.value;
+  const queryTimeout = Number(options.queryTimeout.value) || 30;
+  const resultLimit = Number(options.resultLimit.value) || 100;
 
-  const summaryAttrList = parseAttributeList(options.summaryAttributes);
-  const detailAttrList = parseAttributeList(options.detailAttributes);
-  const itemTitleAttr = (options.itemTitleAttribute || '').trim().toUpperCase();
-  const maxSummaryItems = Number(options.maxSummaryItems) || 3;
+  const summaryAttrList = parseAttributeList(options.summaryAttributes.value);
+  const detailAttrList = parseAttributeList(options.detailAttributes.value);
+  const itemTitleAttr = ((options.itemTitleAttribute && options.itemTitleAttribute.value) || '').trim().toUpperCase();
+  const maxSummaryItems = Number((options.maxSummaryItems && options.maxSummaryItems.value)) || 3;
 
   const lookupResults = await Promise.all(
     entities.map(async (entity) => {
@@ -126,10 +126,10 @@ const doLookup = async (entities, options, cb) => {
           },
           bindings
         };
-        if (options.warehouse) body.warehouse = options.warehouse;
-        if (options.database) body.database = options.database;
-        if (options.schema) body.schema = options.schema;
-        if (options.role) body.role = options.role;
+        if (options.warehouse && options.warehouse.value) body.warehouse = options.warehouse.value;
+        if (options.database && options.database.value) body.database = options.database.value;
+        if (options.schema && options.schema.value) body.schema = options.schema.value;
+        if (options.role && options.role.value) body.role = options.role.value;
 
         const submitResult = await submitStatement({ baseUrl, token, authType, body });
 
@@ -246,10 +246,10 @@ const onMessage = async (payload, options, cb) => {
     const result = await pollStatement({ baseUrl, token, authType, statementHandle });
 
     if (result.status === 200) {
-      const summaryAttrList = parseAttributeList(options.summaryAttributes);
-      const detailAttrList = parseAttributeList(options.detailAttributes);
-      const itemTitleAttr = (options.itemTitleAttribute || '').trim().toUpperCase();
-      const maxSummaryItems = Number(options.maxSummaryItems) || 3;
+      const summaryAttrList = parseAttributeList(options.summaryAttributes.value);
+      const detailAttrList = parseAttributeList(options.detailAttributes.value);
+      const itemTitleAttr = ((options.itemTitleAttribute && options.itemTitleAttribute.value) || '').trim().toUpperCase();
+      const maxSummaryItems = Number((options.maxSummaryItems && options.maxSummaryItems.value)) || 3;
 
       const rows = mapResultRows(result.body, detailAttrList, itemTitleAttr);
       const summaryTags = buildSummaryTags(rows, summaryAttrList, maxSummaryItems);
