@@ -24,6 +24,62 @@ const { get } = require('lodash');
  * @param {string} itemTitleAttr - uppercase column name to use as row title
  * @returns {Array<object>} mapped display rows
  */
+/**
+ * Attempts to parse a string as JSON.
+ * Returns the parsed value or null if not valid JSON.
+ */
+function tryParseJson(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Returns true if a value is "empty" — null, the string "null", or whitespace-only.
+ */
+function isEmpty(v) {
+  return v === null || v === undefined || String(v).trim() === '' || String(v).trim() === 'null';
+}
+
+/**
+ * Transforms a raw column value into an attribute descriptor.
+ *
+ * Scalar → { key, value: string, isNested: false }
+ * JSON array of objects → { key, isNested: true, items: [[ {key, value} ]] }
+ * JSON object → { key, isNested: true, items: [[ {key, value} ]] }
+ * JSON array of scalars → { key, value: "a, b, c", isNested: false }
+ */
+function buildAttribute(key, rawValue) {
+  const parsed = tryParseJson(rawValue);
+
+  if (parsed !== null) {
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+
+    // Array of objects → nested sub-table rows
+    if (arr.length > 0 && typeof arr[0] === 'object' && arr[0] !== null) {
+      const items = arr.map((obj) =>
+        Object.entries(obj)
+          .filter(([, v]) => !isEmpty(v))
+          .map(([k, v]) => ({ key: k, value: String(v) }))
+      ).filter((fields) => fields.length > 0);
+
+      return { key, isNested: true, items };
+    }
+
+    // Array of primitives → comma-joined string
+    const joined = arr.filter((v) => !isEmpty(v)).join(', ');
+    return { key, isNested: false, value: joined };
+  }
+
+  // Plain scalar
+  return { key, isNested: false, value: isEmpty(rawValue) ? '' : String(rawValue) };
+}
+
 function mapResultRows(resultSet, detailAttrList, itemTitleAttr) {
   const rowType = resultSet?.resultSetMetaData?.rowType || [];
   const data = resultSet?.data || [];
@@ -42,9 +98,9 @@ function mapResultRows(resultSet, detailAttrList, itemTitleAttr) {
     if (detailAttrList.length > 0) {
       displayAttributes = detailAttrList
         .filter(({ column }) => raw.hasOwnProperty(column))
-        .map(({ label, column }) => ({ key: label || column, value: raw[column] }));
+        .map(({ label, column }) => buildAttribute(label || column, raw[column]));
     } else {
-      displayAttributes = columnNames.map((col) => ({ key: col, value: raw[col] }));
+      displayAttributes = columnNames.map((col) => buildAttribute(col, raw[col]));
     }
 
     const title = itemTitleAttr && raw.hasOwnProperty(itemTitleAttr)

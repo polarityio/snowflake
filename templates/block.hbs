@@ -102,7 +102,22 @@
         {{#each row.attributes as |attr|}}
           <div class="snow-attr-row">
             <span class="p-key">{{attr.key}}:</span>
-            <span class="p-value">{{attr.value}}</span>
+            {{#if attr.isNested}}
+              <div class="snow-nested-block">
+                {{#each attr.items as |item|}}
+                  <div class="snow-nested-item">
+                    {{#each item as |field|}}
+                      <div class="snow-nested-row">
+                        <span class="snow-nested-key">{{field.key}}</span>
+                        <span class="snow-nested-val">{{field.value}}</span>
+                      </div>
+                    {{/each}}
+                  </div>
+                {{/each}}
+              </div>
+            {{else}}
+              <span class="p-value">{{attr.value}}</span>
+            {{/if}}
           </div>
         {{/each}}
       </div>
@@ -122,7 +137,24 @@
             {{#each row.attributes as |attr|}}
               <tr class="snow-kv-row">
                 <td class="snow-kv-key">{{attr.key}}</td>
-                <td class="snow-kv-val">{{attr.value}}</td>
+                <td class="snow-kv-val">
+                  {{#if attr.isNested}}
+                    <div class="snow-nested-block">
+                      {{#each attr.items as |item|}}
+                        <div class="snow-nested-item">
+                          {{#each item as |field|}}
+                            <div class="snow-nested-row">
+                              <span class="snow-nested-key">{{field.key}}</span>
+                              <span class="snow-nested-val">{{field.value}}</span>
+                            </div>
+                          {{/each}}
+                        </div>
+                      {{/each}}
+                    </div>
+                  {{else}}
+                    {{attr.value}}
+                  {{/if}}
+                </td>
               </tr>
             {{/each}}
           </tbody>
