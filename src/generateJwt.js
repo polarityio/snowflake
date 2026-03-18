@@ -172,7 +172,7 @@ function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassph
 
   const token = jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 
-  return { token, expiresAt: (exp - JWT_REFRESH_BUFFER_SECONDS) * 1000 };
+  return { token, expiresAt: (exp - JWT_REFRESH_BUFFER_SECONDS) * 1000, fingerprint, jwtIss: payload.iss, jwtSub: payload.sub };
 }
 
 /**

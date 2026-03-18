@@ -83,12 +83,21 @@ async function getToken(options) {
     },
     'getToken key-pair diagnostics'
   );
-  const { token, expiresAt } = generateJwt({
+  const { token, expiresAt, fingerprint, jwtIss, jwtSub } = generateJwt({
     accountIdentifier: getOpt(options, 'accountIdentifier'),
     username: getOpt(options, 'username'),
     privateKey: getOpt(options, 'privateKey'),
     privateKeyPassphrase: getOpt(options, 'privateKeyPassphrase')
   });
+  Logger.info(
+    {
+      fingerprint,
+      jwtIss,
+      jwtSub,
+      hint: 'Run in Snowflake: DESCRIBE USER POLARITY_EXTSVC; and compare RSA_PUBLIC_KEY_FP value against fingerprint above.'
+    },
+    'JWT generated — verify fingerprint matches Snowflake'
+  );
   jwtCache = { token, expiresAt };
   return token;
 }
