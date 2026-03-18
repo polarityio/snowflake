@@ -29,15 +29,44 @@ function computePublicKeyFingerprint(publicKeyDer) {
 
 /**
  * Normalises a PEM string for use with Node.js crypto.
- * Polarity may store multiline password fields with literal \n sequences
- * instead of real newline characters. This restores them.
+ *
+ * Polarity can corrupt PEM storage in two ways:
+ *   1. Literal \n sequences instead of real newlines (escaped storage)
+ *   2. Spaces substituted for newlines (Polarity textarea storage)
+ *
+ * In both cases the base64 body is valid — only the line-break structure is wrong.
+ * We reconstruct the PEM with proper newlines so crypto.createPrivateKey can parse it.
  */
 function normalizePem(pem) {
   if (!pem) return '';
-  return pem
-    .replace(/\\n/g, '\n')  // literal \n → real newline
-    .replace(/\\r/g, '')    // strip any \r
+
+  // Step 1: restore escaped newlines (literal backslash-n → real newline)
+  let s = pem
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
     .trim();
+
+  // Step 2: locate PEM header and footer
+  const headerMatch = s.match(/-----BEGIN ([A-Z ]+)-----/);
+  const footerMatch = s.match(/-----END ([A-Z ]+)-----/);
+  if (!headerMatch || !footerMatch) return s;
+
+  const type = headerMatch[1];
+  const header = `-----BEGIN ${type}-----`;
+  const footer = `-----END ${type}-----`;
+
+  const bodyStart = s.indexOf(header) + header.length;
+  const bodyEnd = s.lastIndexOf(footer);
+  const rawBody = s.slice(bodyStart, bodyEnd);
+
+  // Step 3: strip ALL whitespace from base64 body (base64 never uses spaces)
+  const cleanBase64 = rawBody.replace(/\s+/g, '');
+  if (!cleanBase64) return s;
+
+  // Step 4: re-wrap at 64 chars per line (standard PEM) and reassemble
+  const wrapped = (cleanBase64.match(/.{1,64}/g) || []).join('\n');
+  return `${header}\n${wrapped}\n${footer}`;
 }
 
 /**
