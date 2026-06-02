@@ -64,6 +64,10 @@ The integration generates and caches JWTs automatically (refreshed every 54 minu
 | Max Summary Items | Default: 3 |
 | Detail Attributes | Comma-delimited column names for detail panel. Blank = all columns. |
 | Item Title Attribute | Column name to use as section header per row. |
+| Bulk Lookup Enabled | Default: `true`. When the SQL Query Template uses a single `?` in `= ?` or `IN (?)`, multiple entities in a hover are coalesced into one query and split by predicate column. Falls back transparently for queries that don't match the pattern. |
+| Max Result Partitions | Default: `1`. Maximum number of Snowflake result partitions to fetch per query (Snowflake splits large result sets into ~10MB partitions). Hard cap: `10`. |
+| Result Cache Enabled | Default: `true`. Cache successful lookup results in process memory keyed by SQL + entity + warehouse/role/database/schema. Errors are never cached. |
+| Result Cache TTL (s) | Default: `300`. Cache lifetime in seconds. Set to `0` to disable caching while keeping `cacheEnabled` toggled on for ops control. |
 
 ## SQL Query Template
 
@@ -96,6 +100,69 @@ Queries are submitted asynchronously and polled for completion with exponential 
 
 If you regularly hit the cancel-on-timeout path, raise the **Query Timeout (s)** option, narrow the SQL `WHERE` clause, or lower the **Result Limit (rows)**.
 
+## Bulk Lookup SQL Pattern
+
+When **Bulk Lookup Enabled** is on (the default) and the SQL Query Template matches a specific shape, the integration coalesces multiple entities from a single Polarity hover into **one** Snowflake query, then splits the result rows back to each entity by matching the predicate column case-insensitively.
+
+**Required SQL shape:**
+
+- Exactly **one** `?` placeholder in the query.
+- The `?` must appear in either an equality predicate (`column = ?`) or an `IN` predicate (`column IN (?)`).
+- The same column referenced in the predicate must also be present in the `SELECT` list (the integration uses it as the row-to-entity matching key).
+
+**Worked example — bulk eligible:**
+
+```sql
+-- Original SQL with a single ? in a = predicate
+SELECT src_ip, threat_score, category, last_seen
+FROM   security.events
+WHERE  src_ip = ?
+```
+
+For a hover containing 3 IPs, the integration rewrites and submits this:
+
+```sql
+SELECT src_ip, threat_score, category, last_seen
+FROM   security.events
+WHERE  src_ip IN (?, ?, ?)
+```
+
+…then partitions the returned rows into per-entity buckets by `src_ip`.
+
+**Falls back to per-entity execution when:**
+
+- The SQL has multiple `?` placeholders (e.g., `WHERE src_ip = ? OR dst_ip = ?`).
+- The predicate column isn't a top-level column reference (e.g., `WHERE LOWER(src_ip) = ?`).
+- The predicate column doesn't appear in the result set.
+- Only one entity is in the hover (no benefit to bulking).
+
+The integration logs an INFO-level line each time it falls back, so you can audit your SQL against the bulk pattern.
+
+## Multi-Partition Results
+
+Snowflake splits large result sets into ~10MB partitions. By default this integration fetches **partition 0 only** (`maxPartitions = 1`) to match prior behavior. Increase **Max Result Partitions** to fetch additional partitions serially via `GET /api/v2/statements/<handle>?partition=N`.
+
+The truncation banner now displays `Showing N of M result partitions` so you can see at a glance whether you've retrieved everything. Hard cap is `10` partitions per query.
+
+When raising this, also consider:
+
+- Raising **Result Limit (rows)** if your SQL applies a `LIMIT` clause itself.
+- The Polarity client renders one card per row, so values above ~5 partitions are usually only useful for back-end reducer pipelines (AI assistant, exports), not the overlay UI.
+- Per-partition fetch failures are best-effort: any rows successfully fetched are still returned, and a TRACE-level log line records the partition that failed.
+
+## Result Caching
+
+Lookup results are cached in **process memory** keyed by SHA-256 of `(rendered SQL + entity value + warehouse + role + database + schema)`. Default TTL is **300 seconds**.
+
+**Behavior:**
+
+- **Errors are never cached.** Auth failures, warehouse suspended, query cancelled, and any classified error all force a fresh query on the next lookup.
+- **Lazy eviction on read** — expired entries are dropped when re-encountered, no background sweeper.
+- **Per-process scope** — cache does not persist across integration restarts and is not shared between Polarity workers.
+- **Bypass on non-deterministic SQL** — when the SQL contains any of `now()`, `current_timestamp()`, `current_date()`, `current_time()`, `sysdate()`, `getdate()`, `random()`, or `uuid_string()`, the cache is bypassed in both directions: results are neither read from nor written to the cache. This protects analysts from stale time-bound or random-sampled data.
+
+**To disable:** set **Result Cache TTL (s)** to `0` (caching is skipped while preserving the option toggle for ops visibility), or set **Result Cache Enabled** to `false`.
+
 ## Resilience Features (v1.0.0)
 
 - **5xx retry with idempotent `requestId`** — the integration retries up to 3 times on `502`/`503`/`504` responses with `[1s, 2s, 4s]` backoff, reusing the same `requestId` so Snowflake treats the request as a single logical operation.
@@ -117,4 +184,4 @@ User identifiers (resolved Snowflake username, JWT claims, IDP claims, full key 
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full v1.0.0 release notes.
+See [CHANGELOG.md](./CHANGELOG.md) for the full release notes (v1.0.0 baseline + v1.1.0 bulk lookup, multi-partition fetch, and result caching).

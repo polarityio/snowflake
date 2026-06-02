@@ -84,7 +84,7 @@
   {{#if details.executionStats.isTruncated}}
     <div class="snow-truncation-warning">
       {{fa-icon "exclamation-triangle" fixedWidth=true}}
-      Results truncated — only the first partition is shown. Increase your Result Limit or refine your SQL query.
+      Showing {{details.executionStats.partitionsFetched}} of {{details.executionStats.partitionsTotal}} result partitions — increase Max Result Partitions, raise the Result Limit, or refine your SQL query to see all rows.
     </div>
   {{/if}}
 

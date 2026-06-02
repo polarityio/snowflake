@@ -3,7 +3,7 @@
 const { v4: uuidv4 } = require('uuid');
 const request = require('postman-request');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const USER_AGENT = `polarity-snowflake-integration/${VERSION}`;
 
 // 5xx retry configuration (gateway/transient failures only).

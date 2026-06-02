@@ -66,7 +66,7 @@ function validateConnectivity({ baseUrl, token, authType, logger }) {
     const headers = {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
-      'User-Agent': 'polarity-snowflake-integration/1.0.0'
+      'User-Agent': 'polarity-snowflake-integration/1.1.0'
     };
     if (authType === 'KEYPAIR_JWT') {
       headers['X-Snowflake-Authorization-Token-Type'] = 'KEYPAIR_JWT';

@@ -204,6 +204,46 @@ module.exports = {
       type: 'text',
       userCanEdit: false,
       adminOnly: true
+    },
+    {
+      key: 'bulkLookupEnabled',
+      name: 'Enable Bulk Lookup',
+      description:
+        'When enabled and the SQL Query Template uses a single ? placeholder in either an "= ?" or "IN (?)" predicate, multiple entities in the same lookup batch are coalesced into one Snowflake query using "IN (?, ?, ...)" expansion. Result rows are then mapped back to each entity by matching the column referenced in the predicate. If the SQL contains multiple ? placeholders or no recognizable predicate, the integration falls back to per-entity queries automatically. See README for the bulk pattern and worked example. Default: enabled.',
+      default: true,
+      type: 'boolean',
+      userCanEdit: false,
+      adminOnly: true
+    },
+    {
+      key: 'maxPartitions',
+      name: 'Max Result Partitions',
+      description:
+        'Maximum number of Snowflake result-set partitions to fetch per query. Snowflake splits large result sets into ~10MB partitions; partition 0 is returned on completion and additional partitions are fetched serially via /api/v2/statements/<handle>?partition=N. Defaults to 1 (only the first partition is fetched, matching legacy behavior). Maximum: 10. When the result has more partitions than the configured cap, the overlay shows a truncation banner with "N of M partitions" and a Logger.warn is emitted.',
+      default: 1,
+      type: 'number',
+      userCanEdit: false,
+      adminOnly: true
+    },
+    {
+      key: 'cacheEnabled',
+      name: 'Enable Result Cache',
+      description:
+        'When enabled, formatted lookup results are cached in process memory keyed by SHA-256 of (rendered SQL + entity value + warehouse + role + database + schema). Cache is automatically bypassed when the SQL contains non-deterministic functions (now/current_timestamp/current_date/current_time/sysdate/getdate/random/uuid_string). Cache is per integration instance (shared across all users) and lazily evicted on read. Default: enabled.',
+      default: true,
+      type: 'boolean',
+      userCanEdit: false,
+      adminOnly: true
+    },
+    {
+      key: 'cacheTtlSeconds',
+      name: 'Cache TTL (seconds)',
+      description:
+        'Number of seconds a cached lookup result is considered fresh. Once expired, the next lookup for the same entity refetches from Snowflake and overwrites the cache. Set to 0 to effectively disable caching while leaving the cache infrastructure on. Default: 300 (5 minutes).',
+      default: 300,
+      type: 'number',
+      userCanEdit: false,
+      adminOnly: true
     }
   ]
 };

@@ -2,6 +2,30 @@
 
 All notable changes to the Polarity Snowflake integration are documented in this file.
 
+## 1.1.0 — INT-553 deferred items closeout
+
+Closes the three INT-553 audit items deferred from `1.0.0`. No breaking changes; all new behavior is opt-in via new admin-only options that default to safe values that match prior behavior (with the exception of bulk lookup, which is enabled by default but transparently falls back when the configured SQL doesn't match the bulk pattern).
+
+### Added
+
+- **Bulk lookup via `IN (?, ?, ...)` parameter expansion.** When `bulkLookupEnabled` is true (default) and the SQL Query Template uses a single `?` placeholder in either an `= ?` or `IN (?)` predicate, multiple entities in the same Polarity lookup batch are coalesced into one Snowflake query. Result rows are mapped back to each entity by matching the column referenced in the predicate, case-insensitively. Drops a 100-entity hover from N round-trips down to 1 for SQL that fits the pattern. SQL that does not fit the pattern (or has multiple `?` placeholders) falls back to per-entity execution with a single info-level log line. New option: `bulkLookupEnabled` (boolean, default `true`).
+- **Multi-partition result fetch.** Snowflake splits large result sets into ~10MB partitions; the integration now serially pulls additional partitions via `/api/v2/statements/<handle>?partition=N` up to the configured cap, then concatenates the rows into a single `details.results` array. The truncation banner now displays `N of M partitions` so analysts can see how much was retrieved vs how much exists. New option: `maxPartitions` (number, default `1`, hard cap `10`). Default of `1` preserves prior behavior on upgrade.
+- **In-memory result-level TTL cache.** Lookup results are cached in process memory keyed by SHA-256 of `(rendered SQL + entity value + warehouse + role + database + schema)`. Lazy eviction on read. Errors are never cached. The cache is automatically bypassed when the SQL contains any of the non-deterministic functions `now()`, `current_timestamp()`, `current_date()`, `current_time()`, `sysdate()`, `getdate()`, `random()`, or `uuid_string()` — neither read nor written. New options: `cacheEnabled` (boolean, default `true`), `cacheTtlSeconds` (number, default `300`).
+- **`details.executionStats.partitionsFetched`** and **`partitionsTotal`** fields on every result, surfaced through `reducers/details.json` and visible in the AI assistant's reduced view.
+
+### Changed
+
+- **Truncation banner copy** now reads `Showing N of M result partitions — increase Max Result Partitions, raise the Result Limit, or refine your SQL query to see all rows.` (was previously `only the first partition is shown`).
+- **`details.executionStats`** retains `partitionCount` for back-compat and adds `partitionsFetched` / `partitionsTotal`.
+
+### Migration notes
+
+- **Existing installs are unaffected on upgrade.** All three new behaviors default to safe values:
+  - `bulkLookupEnabled = true`, but only activates when the configured SQL matches the single-`?` predicate pattern; otherwise execution is per-entity exactly as before.
+  - `maxPartitions = 1` preserves the prior partition-0-only fetch behavior.
+  - `cacheEnabled = true` with a 5-minute TTL — disable by setting `cacheTtlSeconds = 0` or `cacheEnabled = false` if you require strictly fresh reads on every lookup.
+- See `README.md` → "Bulk Lookup SQL Pattern", "Multi-Partition Results", and "Result Caching" for worked examples and SQL guidance.
+
 ## 1.0.0 — INT-553 Closeout
 
 First production-ready release. This is a baseline rewrite cutting from the legacy `3.x` versioning, and ships ten audit-driven changes from Linear ticket **INT-553**.
@@ -32,14 +56,6 @@ First production-ready release. This is a baseline rewrite cutting from the lega
 
 - **`onMessage` handler.** The "Check Query Status" pending-state UX has been replaced by hard cancel-on-timeout. The whole code path (server handler, button, action, computed property) is gone.
 - **`details.complete = false` branch.** Result objects always now arrive in a terminal state (success or classified error), simplifying the template.
-
-### Deferred to follow-up tickets
-
-These items in the INT-553 audit list were investigated but deemed too large to ship in this release without scope creep. Tracked separately:
-
-- **Bulk lookup via `IN (?)` parameter expansion** — substantial refactor to `doLookup` request-batching with conservative concurrency and per-entity attribution from result rows.
-- **Multi-partition result fetch** — `querySnowflake.js` now exposes per-partition fetch but `doLookup` still consumes only partition 0. Behind a config flag once implemented.
-- **In-memory result cache** keyed on SHA-256 of the rendered query — needs eviction strategy and per-user vs per-integration scoping decisions.
 
 ### Migration notes
 

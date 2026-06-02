@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { generateJwt, isJwtExpired } = require('./src/generateJwt');
 const {
   submitStatement,
@@ -17,6 +18,23 @@ const { validateConnectivity } = require('./src/validateOptions');
 let Logger;
 // JWT cache: { token, expiresAt }
 let jwtCache = null;
+
+/**
+ * Module-scoped result cache. Keys are SHA-256 hex digests of the canonical
+ * cache key string. Values are { result, expiresAt } where `result` is the
+ * fully-formatted lookup-result object as returned to Polarity (sans `entity`).
+ */
+const lookupCache = new Map();
+
+/**
+ * Detects non-deterministic SQL functions whose presence makes any cached
+ * result stale immediately. When the rendered query matches this regex the
+ * cache is bypassed entirely — neither read nor written.
+ */
+const NON_DETERMINISTIC_RE =
+  /\b(now|current_timestamp|current_date|current_time|sysdate|getdate|random|uuid_string)\s*\(/i;
+
+const MAX_PARTITIONS_HARD_CAP = 10;
 
 /**
  * Normalizes a Polarity option value regardless of how the server delivers it.
@@ -218,6 +236,255 @@ function buildBindings(query, entityValue, bindingType) {
   return bindings;
 }
 
+/**
+ * Counts the number of ? placeholders in a SQL string.
+ */
+function countPlaceholders(sql) {
+  return ((sql || '').match(/\?/g) || []).length;
+}
+
+/**
+ * Inspects the rendered SQL and returns the column name used in the entity
+ * predicate when the SQL is bulk-rewritable, or `null` when it is not.
+ *
+ * Bulk-rewritable forms (single ? placeholder, single predicate):
+ *   col = ?                 → rewritten to  col IN (?, ?, ...)
+ *   col IN (?)              → rewritten to  col IN (?, ?, ...)
+ *   schema.tbl.col = ?      → column is `col` (last dot segment)
+ *
+ * The match must be unambiguous — if the SQL contains either form more than
+ * once, or the lone ? is NOT inside one of these forms, the SQL is not
+ * bulk-rewritable.
+ */
+function detectBulkColumn(sql) {
+  if (!sql || typeof sql !== 'string') return null;
+  if (countPlaceholders(sql) !== 1) return null;
+
+  const eqRe = /(\w+(?:\.\w+)*)\s*=\s*\?/g;
+  const inRe = /(\w+(?:\.\w+)*)\s+IN\s*\(\s*\?\s*\)/gi;
+
+  const eqMatches = [...sql.matchAll(eqRe)];
+  const inMatches = [...sql.matchAll(inRe)];
+
+  const total = eqMatches.length + inMatches.length;
+  if (total !== 1) return null; // 0 or >1 candidate predicates → fall back
+
+  const match = (eqMatches[0] || inMatches[0])[1];
+  if (!match) return null;
+  const segments = match.split('.');
+  const colName = segments[segments.length - 1];
+  return {
+    qualifiedName: match,
+    columnName: colName,
+    form: eqMatches.length === 1 ? 'eq' : 'in'
+  };
+}
+
+/**
+ * Rewrites a single-? bulk-rewritable SQL into one with N comma-separated
+ * placeholders inside an IN(...) clause.
+ *
+ *   "SELECT ... WHERE ip = ?"          + N=3  →  "SELECT ... WHERE ip IN (?, ?, ?)"
+ *   "SELECT ... WHERE ip IN (?)"       + N=3  →  "SELECT ... WHERE ip IN (?, ?, ?)"
+ */
+function rewriteSqlForBulk(sql, predicate, n) {
+  const placeholders = new Array(n).fill('?').join(', ');
+  if (predicate.form === 'eq') {
+    const eqRe = /(\w+(?:\.\w+)*)\s*=\s*\?/;
+    return sql.replace(eqRe, `${predicate.qualifiedName} IN (${placeholders})`);
+  }
+  // form === 'in'
+  const inRe = /(\w+(?:\.\w+)*)\s+IN\s*\(\s*\?\s*\)/i;
+  return sql.replace(inRe, `${predicate.qualifiedName} IN (${placeholders})`);
+}
+
+/**
+ * Builds bindings for a bulk query. Each entity value gets one positional binding.
+ */
+function buildBulkBindings(entityValues, bindingType) {
+  const bindings = {};
+  entityValues.forEach((v, i) => {
+    bindings[String(i + 1)] = { type: bindingType, value: v };
+  });
+  return bindings;
+}
+
+/**
+ * Locates the result-column index that matches the bulk predicate column,
+ * case-insensitively. Returns -1 if not present in the resultSetMetaData.
+ */
+function findResultColumnIndex(resultSet, columnName) {
+  const cols = resultSet?.resultSetMetaData?.rowType || [];
+  const target = (columnName || '').toUpperCase();
+  for (let i = 0; i < cols.length; i++) {
+    if ((cols[i].name || '').toUpperCase() === target) return i;
+  }
+  return -1;
+}
+
+/**
+ * Splits a bulk resultSet's `data` rows into per-entity sub-resultSets keyed
+ * by the lower-cased entity value. Each sub-resultSet is a shallow copy with
+ * its own filtered `data` array — `resultSetMetaData` is shared.
+ *
+ * Rows whose split key is null/empty are dropped from the per-entity buckets
+ * (they cannot be attributed to a specific entity).
+ */
+function splitResultsByEntity(resultSet, entityValues, columnIndex) {
+  const buckets = new Map();
+  const knownKeys = new Set(entityValues.map((v) => String(v).toLowerCase()));
+  entityValues.forEach((v) => buckets.set(String(v).toLowerCase(), []));
+
+  const data = Array.isArray(resultSet?.data) ? resultSet.data : [];
+  for (const row of data) {
+    if (columnIndex < 0 || columnIndex >= row.length) continue;
+    const cellValue = row[columnIndex];
+    if (cellValue === null || cellValue === undefined) continue;
+    const key = String(cellValue).toLowerCase();
+    if (knownKeys.has(key)) {
+      buckets.get(key).push(row);
+    }
+  }
+
+  const subResultSets = {};
+  for (const [key, rows] of buckets.entries()) {
+    subResultSets[key] = {
+      ...resultSet,
+      data: rows
+    };
+  }
+  return subResultSets;
+}
+
+/**
+ * Fetches additional result-set partitions (1..N) and concatenates the data
+ * arrays into the partition-0 resultSet. Returns the merged resultSet and
+ * the number of partitions actually fetched.
+ *
+ * Snowflake splits large result sets into ~10MB partitions; partition 0 is
+ * delivered with the initial completion response, and additional partitions
+ * are pulled serially via /api/v2/statements/<handle>?partition=N.
+ *
+ * `maxPartitions` is the user-configured cap (1..MAX_PARTITIONS_HARD_CAP).
+ */
+async function fetchAdditionalPartitions({
+  baseUrl,
+  token,
+  authType,
+  resultSet,
+  maxPartitions
+}) {
+  const partitionInfo = resultSet?.resultSetMetaData?.partitionInfo || [];
+  const totalPartitions = partitionInfo.length || 1;
+  const cap = Math.max(1, Math.min(Number(maxPartitions) || 1, MAX_PARTITIONS_HARD_CAP));
+  const targetCount = Math.min(totalPartitions, cap);
+
+  if (targetCount <= 1 || totalPartitions <= 1) {
+    return {
+      mergedResultSet: resultSet,
+      partitionsFetched: 1,
+      partitionsTotal: totalPartitions
+    };
+  }
+
+  const handle = resultSet.statementHandle;
+  const mergedData = Array.isArray(resultSet.data) ? [...resultSet.data] : [];
+
+  for (let p = 1; p < targetCount; p++) {
+    try {
+      const part = await pollStatement({
+        baseUrl,
+        token,
+        authType,
+        statementHandle: handle,
+        partition: p,
+        logger: Logger
+      });
+      if (part.status === 200 && Array.isArray(part.body?.data)) {
+        for (const row of part.body.data) mergedData.push(row);
+      } else {
+        Logger.warn(
+          { statementHandle: handle, partition: p, status: part.status },
+          'Unexpected status fetching additional partition — stopping partition merge'
+        );
+        return {
+          mergedResultSet: { ...resultSet, data: mergedData },
+          partitionsFetched: p,
+          partitionsTotal: totalPartitions
+        };
+      }
+    } catch (err) {
+      Logger.warn(
+        { statementHandle: handle, partition: p, err: err.message },
+        'Error fetching additional partition — returning rows fetched so far'
+      );
+      return {
+        mergedResultSet: { ...resultSet, data: mergedData },
+        partitionsFetched: p,
+        partitionsTotal: totalPartitions
+      };
+    }
+  }
+
+  if (totalPartitions > cap) {
+    Logger.warn(
+      { statementHandle: handle, totalPartitions, cap },
+      'Result has more partitions than maxPartitions cap — truncating'
+    );
+  }
+
+  return {
+    mergedResultSet: { ...resultSet, data: mergedData },
+    partitionsFetched: targetCount,
+    partitionsTotal: totalPartitions
+  };
+}
+
+/**
+ * Builds a SHA-256 cache key from the rendered SQL plus context that affects
+ * the result (entity value, warehouse, role, database, schema). The exact
+ * authentication identity is intentionally NOT part of the key — caching is
+ * per integration instance, not per Polarity user.
+ */
+function makeCacheKey({ sql, entityValue, warehouse, role, database, schema }) {
+  const parts = [
+    sql || '',
+    String(entityValue ?? ''),
+    warehouse || '',
+    role || '',
+    database || '',
+    schema || ''
+  ];
+  return crypto.createHash('sha256').update(parts.join('\u0000')).digest('hex');
+}
+
+/**
+ * Lazily-evicting cache get. Returns the cached lookup-result object if fresh,
+ * or null on miss / expired entry. Expired entries are deleted on read.
+ */
+function cacheGet(key) {
+  const entry = lookupCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    lookupCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function cacheSet(key, result, ttlSeconds) {
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) return;
+  lookupCache.set(key, { result, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
+/**
+ * True iff the given SQL contains any non-deterministic function call that
+ * disqualifies the result from being cached.
+ */
+function isNonDeterministic(sql) {
+  return NON_DETERMINISTIC_RE.test(sql || '');
+}
+
 const doLookup = async (entities, options, cb) => {
   Logger.debug({ entities: entities.map((e) => e.value) }, 'doLookup');
 
@@ -246,6 +513,27 @@ const doLookup = async (entities, options, cb) => {
   const itemTitleAttr = (getOpt(options, 'itemTitleAttribute') || '').trim().toUpperCase();
   const maxSummaryItems = Number(getOpt(options, 'maxSummaryItems')) || 3;
 
+  const warehouseOpt = getOpt(options, 'warehouse');
+  const databaseOpt = getOpt(options, 'database');
+  const schemaOpt = getOpt(options, 'schema');
+  const roleOpt = getOpt(options, 'role');
+
+  // New behavior toggles (default true / 1 / 300 to match documented defaults).
+  const bulkLookupEnabled = getOpt(options, 'bulkLookupEnabled') !== false;
+  const maxPartitionsRaw = Number(getOpt(options, 'maxPartitions'));
+  const maxPartitions = Math.max(
+    1,
+    Math.min(
+      Number.isFinite(maxPartitionsRaw) && maxPartitionsRaw > 0 ? maxPartitionsRaw : 1,
+      MAX_PARTITIONS_HARD_CAP
+    )
+  );
+  const cacheEnabled = getOpt(options, 'cacheEnabled') !== false;
+  const cacheTtlRaw = Number(getOpt(options, 'cacheTtlSeconds'));
+  const cacheTtl = Number.isFinite(cacheTtlRaw) && cacheTtlRaw >= 0 ? cacheTtlRaw : 300;
+  const cacheBypassed = isNonDeterministic(query);
+  const cacheActive = cacheEnabled && cacheTtl > 0 && !cacheBypassed;
+
   Logger.trace(
     {
       baseUrl,
@@ -258,118 +546,418 @@ const doLookup = async (entities, options, cb) => {
       detailAttrList,
       itemTitleAttr,
       maxSummaryItems,
+      bulkLookupEnabled,
+      maxPartitions,
+      cacheEnabled,
+      cacheTtl,
+      cacheBypassed,
       tokenLength: token ? token.length : 0
     },
     'doLookup — resolved options'
   );
 
-  const lookupResults = await Promise.all(
-    entities.map(async (entity) => {
-      const startTime = Date.now();
-      let statementHandle;
+  if (!query) {
+    Logger.warn('No SQL query configured — skipping all lookups');
+    return cb(null, entities.map((e) => ({ entity: e, data: null })));
+  }
 
-      try {
-        if (!query) {
-          Logger.warn({ entity: entity.value }, 'No SQL query configured — skipping lookup');
-          return { entity, data: null };
-        }
-        const bindings = buildBindings(query, entity.value, bindingType);
+  // ── Step 1: cache lookup pass ────────────────────────────────────────────
+  // For each entity, build a cache key. If the query is non-deterministic or
+  // caching is disabled, every entity is treated as a miss.
+  const slots = entities.map((entity) => {
+    const cacheKey = cacheActive
+      ? makeCacheKey({
+          sql: query,
+          entityValue: entity.value,
+          warehouse: warehouseOpt,
+          role: roleOpt,
+          database: databaseOpt,
+          schema: schemaOpt
+        })
+      : null;
+    const cached = cacheKey ? cacheGet(cacheKey) : null;
+    return { entity, cacheKey, cached, result: cached || null };
+  });
 
-        Logger.trace({ entity: entity.value, bindings }, 'Built bindings for entity');
-
-        const body = {
-          statement: query,
-          timeout: queryTimeout,
-          parameters: {
-            rows_per_resultset: resultLimit,
-            query_tag: 'polarity-integration',
-            use_cached_result: 'true'
-          },
-          bindings
-        };
-        if (getOpt(options, 'warehouse')) body.warehouse = getOpt(options, 'warehouse');
-        if (getOpt(options, 'database')) body.database = getOpt(options, 'database');
-        if (getOpt(options, 'schema')) body.schema = getOpt(options, 'schema');
-        if (getOpt(options, 'role')) body.role = getOpt(options, 'role');
-
-        Logger.trace({ entity: entity.value }, 'Submitting statement to Snowflake');
-
-        const submitResult = await submitStatement({ baseUrl, token, authType, body, logger: Logger });
-
-        Logger.trace(
-          { entity: entity.value, status: submitResult.status, requestId: submitResult.requestId },
-          'Statement submit response'
-        );
-
-        if (submitResult.status === 200) {
-          return buildLookupResult(
-            entity,
-            submitResult.body,
-            summaryAttrList,
-            detailAttrList,
-            itemTitleAttr,
-            maxSummaryItems,
-            Date.now() - startTime,
-            { warehouseWaking: false },
-            query,
-            Logger
-          );
-        }
-
-        if (submitResult.status === 202) {
-          // Async — poll until complete or budget exhausted (with cancel-on-exhaust).
-          statementHandle = submitResult.body.statementHandle;
-          Logger.trace({ entity: entity.value, statementHandle }, 'Async execution — beginning poll');
-
-          const pollResult = await pollToCompletion({
-            baseUrl,
-            token,
-            authType,
-            statementHandle,
-            startTime
-          });
-
-          // pollToCompletion always either returns complete=true or throws on exhaustion.
-          return buildLookupResult(
-            entity,
-            pollResult.resultSet,
-            summaryAttrList,
-            detailAttrList,
-            itemTitleAttr,
-            maxSummaryItems,
-            pollResult.elapsedMs,
-            { warehouseWaking: pollResult.warehouseWaking },
-            query,
-            Logger
-          );
-        }
-
-        // Unexpected status from submit
-        Logger.error(
-          { status: submitResult.status, body: submitResult.body },
-          'Unexpected submit status'
-        );
-        return buildErrorResult(
-          entity,
-          `Unexpected response status ${submitResult.status} from Snowflake.`,
-          {}
-        );
-      } catch (err) {
-        const readable = parseErrorToReadableJSON(err);
-        Logger.error({ entity: entity.value, err: readable }, 'Entity lookup error');
-        return buildErrorResult(entity, err.userMessage || err.message || 'Lookup failed', {
-          isTimeout: !!err.isTimeout,
-          isAuthError: !!err.isAuthError,
-          isWarehouseError: !!err.isWarehouseError,
-          warehouseWaking: !!err.warehouseWaking,
-          statementHandle: err.statementHandle || statementHandle || ''
-        });
-      }
-    })
+  const cacheHits = slots.filter((s) => s.cached).length;
+  const misses = slots.filter((s) => !s.cached);
+  Logger.trace(
+    { totalEntities: entities.length, cacheHits, cacheMisses: misses.length, cacheActive },
+    'doLookup — cache pass complete'
   );
 
-  Logger.trace({ resultCount: lookupResults.length }, 'Lookup Results');
+  // ── Step 2: dispatch — bulk vs per-entity ────────────────────────────────
+  const predicate = detectBulkColumn(query);
+  const canBulk =
+    bulkLookupEnabled &&
+    misses.length > 1 &&
+    countPlaceholders(query) === 1 &&
+    predicate !== null;
+
+  if (canBulk) {
+    Logger.trace(
+      { predicate, missCount: misses.length },
+      'doLookup — using bulk-lookup path (single rewritten query)'
+    );
+    await runBulkLookup({
+      missSlots: misses,
+      query,
+      predicate,
+      baseUrl,
+      token,
+      authType,
+      bindingType,
+      body: {
+        timeout: queryTimeout,
+        parameters: {
+          rows_per_resultset: resultLimit,
+          query_tag: 'polarity-integration',
+          use_cached_result: 'true'
+        },
+        warehouse: warehouseOpt,
+        database: databaseOpt,
+        schema: schemaOpt,
+        role: roleOpt
+      },
+      summaryAttrList,
+      detailAttrList,
+      itemTitleAttr,
+      maxSummaryItems,
+      maxPartitions
+    });
+  } else {
+    if (bulkLookupEnabled && misses.length > 1 && !canBulk) {
+      Logger.info(
+        { hasPredicate: predicate !== null, placeholderCount: countPlaceholders(query) },
+        'doLookup — bulk-lookup not applicable (no single ?-predicate detected); using per-entity fallback'
+      );
+    }
+    await Promise.all(
+      misses.map(async (slot) => {
+        slot.result = await runSingleEntityLookup({
+          entity: slot.entity,
+          query,
+          baseUrl,
+          token,
+          authType,
+          bindingType,
+          warehouse: warehouseOpt,
+          database: databaseOpt,
+          schema: schemaOpt,
+          role: roleOpt,
+          queryTimeout,
+          resultLimit,
+          summaryAttrList,
+          detailAttrList,
+          itemTitleAttr,
+          maxSummaryItems,
+          maxPartitions
+        });
+      })
+    );
+  }
+
+  // ── Step 3: write back to cache ──────────────────────────────────────────
+  if (cacheActive) {
+    for (const slot of slots) {
+      if (slot.cached) continue; // already a hit
+      if (!slot.result || !slot.result.data) continue; // null / no-data
+      if (slot.result.data?.details?.isError) continue; // never cache errors
+      cacheSet(slot.cacheKey, slot.result, cacheTtl);
+    }
+  }
+
+  const lookupResults = slots.map((s) => s.result || { entity: s.entity, data: null });
+  Logger.trace({ resultCount: lookupResults.length, cacheHits }, 'Lookup Results');
   cb(null, lookupResults);
+};
+
+/**
+ * Per-entity lookup path — submit, optionally poll, fetch additional partitions,
+ * format. Returns a Polarity lookup-result object (never throws).
+ */
+async function runSingleEntityLookup({
+  entity,
+  query,
+  baseUrl,
+  token,
+  authType,
+  bindingType,
+  warehouse,
+  database,
+  schema,
+  role,
+  queryTimeout,
+  resultLimit,
+  summaryAttrList,
+  detailAttrList,
+  itemTitleAttr,
+  maxSummaryItems,
+  maxPartitions
+}) {
+  const startTime = Date.now();
+  let statementHandle;
+
+  try {
+    const bindings = buildBindings(query, entity.value, bindingType);
+    Logger.trace({ entity: entity.value, bindings }, 'Built bindings for entity');
+
+    const body = {
+      statement: query,
+      timeout: queryTimeout,
+      parameters: {
+        rows_per_resultset: resultLimit,
+        query_tag: 'polarity-integration',
+        use_cached_result: 'true'
+      },
+      bindings
+    };
+    if (warehouse) body.warehouse = warehouse;
+    if (database) body.database = database;
+    if (schema) body.schema = schema;
+    if (role) body.role = role;
+
+    const submitResult = await submitStatement({ baseUrl, token, authType, body, logger: Logger });
+    Logger.trace(
+      { entity: entity.value, status: submitResult.status, requestId: submitResult.requestId },
+      'Statement submit response'
+    );
+
+    let resultSet;
+    let warehouseWaking = false;
+    let elapsedMs;
+
+    if (submitResult.status === 200) {
+      resultSet = submitResult.body;
+      elapsedMs = Date.now() - startTime;
+    } else if (submitResult.status === 202) {
+      statementHandle = submitResult.body.statementHandle;
+      const pollResult = await pollToCompletion({
+        baseUrl,
+        token,
+        authType,
+        statementHandle,
+        startTime
+      });
+      resultSet = pollResult.resultSet;
+      warehouseWaking = pollResult.warehouseWaking;
+      elapsedMs = pollResult.elapsedMs;
+    } else {
+      Logger.error(
+        { status: submitResult.status, body: submitResult.body },
+        'Unexpected submit status'
+      );
+      return buildErrorResult(
+        entity,
+        `Unexpected response status ${submitResult.status} from Snowflake.`,
+        {}
+      );
+    }
+
+    // Multi-partition fetch (no-op when maxPartitions=1 or only 1 partition exists).
+    const partitionResult = await fetchAdditionalPartitions({
+      baseUrl,
+      token,
+      authType,
+      resultSet,
+      maxPartitions
+    });
+
+    return buildLookupResult(
+      entity,
+      partitionResult.mergedResultSet,
+      summaryAttrList,
+      detailAttrList,
+      itemTitleAttr,
+      maxSummaryItems,
+      elapsedMs,
+      { warehouseWaking },
+      query,
+      Logger,
+      partitionResult.partitionsFetched,
+      partitionResult.partitionsTotal
+    );
+  } catch (err) {
+    const readable = parseErrorToReadableJSON(err);
+    Logger.error({ entity: entity.value, err: readable }, 'Entity lookup error');
+    return buildErrorResult(entity, err.userMessage || err.message || 'Lookup failed', {
+      isTimeout: !!err.isTimeout,
+      isAuthError: !!err.isAuthError,
+      isWarehouseError: !!err.isWarehouseError,
+      warehouseWaking: !!err.warehouseWaking,
+      statementHandle: err.statementHandle || statementHandle || ''
+    });
+  }
+}
+
+/**
+ * Bulk-lookup path — rewrite SQL into IN(?,?,...), run a single Snowflake query,
+ * fetch additional partitions, then split rows by predicate column to populate
+ * each `missSlot.result`. Falls back to per-entity execution if the bulk query
+ * fails for any reason.
+ */
+async function runBulkLookup({
+  missSlots,
+  query,
+  predicate,
+  baseUrl,
+  token,
+  authType,
+  bindingType,
+  body: bodyDefaults,
+  summaryAttrList,
+  detailAttrList,
+  itemTitleAttr,
+  maxSummaryItems,
+  maxPartitions
+}) {
+  const entityValues = missSlots.map((s) => s.entity.value);
+  const rewrittenSql = rewriteSqlForBulk(query, predicate, entityValues.length);
+  const bindings = buildBulkBindings(entityValues, bindingType);
+  const startTime = Date.now();
+
+  const body = {
+    statement: rewrittenSql,
+    timeout: bodyDefaults.timeout,
+    parameters: bodyDefaults.parameters,
+    bindings
+  };
+  if (bodyDefaults.warehouse) body.warehouse = bodyDefaults.warehouse;
+  if (bodyDefaults.database) body.database = bodyDefaults.database;
+  if (bodyDefaults.schema) body.schema = bodyDefaults.schema;
+  if (bodyDefaults.role) body.role = bodyDefaults.role;
+
+  let resultSet;
+  let warehouseWaking = false;
+  let elapsedMs;
+  let statementHandle;
+
+  try {
+    Logger.trace(
+      {
+        entityCount: entityValues.length,
+        predicate: predicate.qualifiedName,
+        rewrittenSqlLength: rewrittenSql.length
+      },
+      'runBulkLookup — submitting rewritten bulk query'
+    );
+
+    const submitResult = await submitStatement({ baseUrl, token, authType, body, logger: Logger });
+
+    if (submitResult.status === 200) {
+      resultSet = submitResult.body;
+      elapsedMs = Date.now() - startTime;
+    } else if (submitResult.status === 202) {
+      statementHandle = submitResult.body.statementHandle;
+      const pollResult = await pollToCompletion({
+        baseUrl,
+        token,
+        authType,
+        statementHandle,
+        startTime
+      });
+      resultSet = pollResult.resultSet;
+      warehouseWaking = pollResult.warehouseWaking;
+      elapsedMs = pollResult.elapsedMs;
+    } else {
+      throw new Error(`Unexpected response status ${submitResult.status} from Snowflake.`);
+    }
+  } catch (err) {
+    Logger.warn(
+      { err: err.message, entityCount: entityValues.length },
+      'Bulk lookup failed — falling back to per-entity queries'
+    );
+    // Fallback: run each miss as a single-entity lookup.
+    await Promise.all(
+      missSlots.map(async (slot) => {
+        slot.result = await runSingleEntityLookup({
+          entity: slot.entity,
+          query,
+          baseUrl,
+          token,
+          authType,
+          bindingType,
+          warehouse: bodyDefaults.warehouse,
+          database: bodyDefaults.database,
+          schema: bodyDefaults.schema,
+          role: bodyDefaults.role,
+          queryTimeout: bodyDefaults.timeout,
+          resultLimit: bodyDefaults.parameters?.rows_per_resultset || 100,
+          summaryAttrList,
+          detailAttrList,
+          itemTitleAttr,
+          maxSummaryItems,
+          maxPartitions
+        });
+      })
+    );
+    return;
+  }
+
+  // Multi-partition merge for bulk results.
+  const partitionResult = await fetchAdditionalPartitions({
+    baseUrl,
+    token,
+    authType,
+    resultSet,
+    maxPartitions
+  });
+  resultSet = partitionResult.mergedResultSet;
+
+  // Split rows by predicate column and build per-entity results.
+  const colIdx = findResultColumnIndex(resultSet, predicate.columnName);
+  if (colIdx < 0) {
+    Logger.warn(
+      { columnName: predicate.columnName },
+      'Bulk predicate column not present in result set — falling back to per-entity queries. ' +
+        'Add the predicate column to the SELECT list to enable bulk lookups.'
+    );
+    await Promise.all(
+      missSlots.map(async (slot) => {
+        slot.result = await runSingleEntityLookup({
+          entity: slot.entity,
+          query,
+          baseUrl,
+          token,
+          authType,
+          bindingType,
+          warehouse: bodyDefaults.warehouse,
+          database: bodyDefaults.database,
+          schema: bodyDefaults.schema,
+          role: bodyDefaults.role,
+          queryTimeout: bodyDefaults.timeout,
+          resultLimit: bodyDefaults.parameters?.rows_per_resultset || 100,
+          summaryAttrList,
+          detailAttrList,
+          itemTitleAttr,
+          maxSummaryItems,
+          maxPartitions
+        });
+      })
+    );
+    return;
+  }
+
+  const subResultSets = splitResultsByEntity(resultSet, entityValues, colIdx);
+
+  for (const slot of missSlots) {
+    const key = String(slot.entity.value).toLowerCase();
+    const subRs = subResultSets[key] || { ...resultSet, data: [] };
+    slot.result = buildLookupResult(
+      slot.entity,
+      subRs,
+      summaryAttrList,
+      detailAttrList,
+      itemTitleAttr,
+      maxSummaryItems,
+      elapsedMs,
+      { warehouseWaking },
+      rewrittenSql,
+      Logger,
+      partitionResult.partitionsFetched,
+      partitionResult.partitionsTotal
+    );
+  }
 };
 
 function buildLookupResult(
@@ -382,7 +970,9 @@ function buildLookupResult(
   elapsedMs,
   flags,
   renderedQuery,
-  Logger
+  Logger,
+  partitionsFetched,
+  partitionsTotal
 ) {
   Logger.trace(
     {
@@ -404,8 +994,12 @@ function buildLookupResult(
   if (flags?.warehouseWaking) summaryTags.unshift('❄️ Warehouse Resumed');
 
   const { resultSetMetaData, statementHandle, message } = resultSet;
-  const partitionCount = (resultSetMetaData?.partitionInfo || []).length;
-  const isTruncated = partitionCount > 1;
+  const partitionInfoCount = (resultSetMetaData?.partitionInfo || []).length || 1;
+  const partitionsTotalEffective =
+    typeof partitionsTotal === 'number' && partitionsTotal > 0 ? partitionsTotal : partitionInfoCount;
+  const partitionsFetchedEffective =
+    typeof partitionsFetched === 'number' && partitionsFetched > 0 ? partitionsFetched : 1;
+  const isTruncated = partitionsFetchedEffective < partitionsTotalEffective;
 
   return {
     entity,
@@ -420,7 +1014,9 @@ function buildLookupResult(
         executionStats: {
           elapsedSeconds: (elapsedMs / 1000).toFixed(2),
           numRows: resultSetMetaData?.numRows ?? rows.length,
-          partitionCount,
+          partitionCount: partitionsTotalEffective,
+          partitionsFetched: partitionsFetchedEffective,
+          partitionsTotal: partitionsTotalEffective,
           isTruncated
         },
         queryContext: {
