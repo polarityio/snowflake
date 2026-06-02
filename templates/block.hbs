@@ -1,4 +1,4 @@
-{{! ── Error banner ─────────────────────────────────────────────────────── }}
+{{! ── Component-level error banner ──────────────────────────────────────── }}
 {{#if errorMessage}}
   <div class="snow-error-banner">
     {{fa-icon "exclamation-triangle" fixedWidth=true}}
@@ -7,27 +7,60 @@
   </div>
 {{/if}}
 
-{{! ── SQL error state ───────────────────────────────────────────────────── }}
-{{#if details.isError}}
+{{! ── Auth failure (OAuth 401 affordance, item #9) ──────────────────────── }}
+{{#if details.isAuthError}}
+  <div class="snow-error-banner snow-banner-auth">
+    {{fa-icon "lock" fixedWidth=true}}
+    <div>
+      <div><strong>Authentication failed</strong></div>
+      <div class="p-footnote">{{details.errorMessage}}</div>
+      <div class="p-footnote mt-1">
+        {{fa-icon "info-circle" fixedWidth=true}}
+        Refresh the OAuth Token (or regenerate the Key-Pair) in the Polarity integration settings, then retry the lookup.
+      </div>
+    </div>
+  </div>
+
+{{! ── Warehouse suspended (item #8) ─────────────────────────────────────── }}
+{{else if details.isWarehouseError}}
+  <div class="snow-error-banner snow-banner-warehouse">
+    {{fa-icon "snowflake" fixedWidth=true}}
+    <div>
+      <div><strong>Warehouse is suspended</strong></div>
+      <div class="p-footnote">{{details.errorMessage}}</div>
+      <div class="p-footnote mt-1">
+        Snowflake auto-resumes warehouses on demand, but the resume can take 5–30s. Retry this entity in a moment, or have an admin run <span class="snow-mono">ALTER WAREHOUSE &lt;name&gt; RESUME;</span>.
+      </div>
+    </div>
+  </div>
+
+{{! ── Cancelled-on-timeout (item #1) ────────────────────────────────────── }}
+{{else if details.isTimeout}}
+  <div class="snow-error-banner snow-banner-timeout">
+    {{fa-icon "stopwatch" fixedWidth=true}}
+    <div>
+      <div><strong>Query cancelled</strong></div>
+      <div class="p-footnote">{{details.errorMessage}}</div>
+      <div class="p-footnote mt-1">
+        The statement was cancelled on the Snowflake server to free the warehouse. Increase <em>Query Timeout</em> in integration settings, narrow the result set, or simplify the SQL.
+      </div>
+      {{#if details.statementHandle}}
+        <div class="p-footnote mt-1">
+          <span class="p-key">Statement Handle:</span>
+          <span class="p-value snow-mono">{{details.statementHandle}}</span>
+          <button type="button" class="snow-copy-btn" {{action "copyToClipboard" details.statementHandle "copiedHandle"}} title="Copy statement handle">
+            {{fa-icon copyHandleIcon fixedWidth=true}}
+          </button>
+        </div>
+      {{/if}}
+    </div>
+  </div>
+
+{{! ── Generic SQL error ─────────────────────────────────────────────────── }}
+{{else if details.isError}}
   <div class="snow-error-banner">
     {{fa-icon "database" fixedWidth=true}}
     {{details.errorMessage}}
-  </div>
-
-{{! ── Query still running ───────────────────────────────────────────────── }}
-{{else if (not details.complete)}}
-  <div class="d-flex align-items-start justify-content-between">
-    <button type="button" class="btn btn-polarity btn-sm" {{action "checkQueryStatus"}}>
-      {{#if block._state.checkingStatus}}
-        {{fa-icon "spinner-third" fixedWidth=true spin=true}} Checking…
-      {{else}}
-        {{fa-icon "sync" fixedWidth=true}} Check Query Status
-      {{/if}}
-    </button>
-    <span class="snow-elapsed">{{details.executionStats.elapsedSeconds}}s elapsed</span>
-  </div>
-  <div class="mt-1 p-footnote">
-    The query is still running. Click "Check Query Status" to refresh.
   </div>
 
 {{! ── Complete — no results ─────────────────────────────────────────────── }}
@@ -38,6 +71,14 @@
 
 {{! ── Complete — results ────────────────────────────────────────────────── }}
 {{else}}
+
+  {{! Warehouse-resumed informational pill }}
+  {{#if details.warehouseWaking}}
+    <div class="snow-info-banner">
+      {{fa-icon "snowflake" fixedWidth=true}}
+      Warehouse was resumed during this query — first lookups after a suspend may run slower.
+    </div>
+  {{/if}}
 
   {{! Truncation warning }}
   {{#if details.executionStats.isTruncated}}
@@ -194,6 +235,9 @@
         <div class="snow-attr-row">
           <span class="p-key">Statement Handle:</span>
           <span class="p-value snow-mono">{{details.statementHandle}}</span>
+          <button type="button" class="snow-copy-btn" {{action "copyToClipboard" details.statementHandle "copiedHandle"}} title="Copy statement handle">
+            {{fa-icon copyHandleIcon fixedWidth=true}}
+          </button>
         </div>
       {{/if}}
       {{#if details.executionStats.elapsedSeconds}}
@@ -215,6 +259,33 @@
         </div>
       {{/if}}
     </div>
+  {{/if}}
+
+  {{! ── Rendered Query section (collapsible, copyable — item #3) ─────────── }}
+  {{#if details.renderedQuery}}
+    <div class="snow-section-toggle" {{action "toggleSection" "showRenderedQuery"}}>
+      <span class="p-title">
+        {{fa-icon "code" fixedWidth=true}}
+        SQL Query
+      </span>
+      <span class="snow-chevron">
+        {{#if block._state.showRenderedQuery}}
+          {{fa-icon "chevron-up"}}
+        {{else}}
+          {{fa-icon "chevron-down"}}
+        {{/if}}
+      </span>
+    </div>
+    {{#if block._state.showRenderedQuery}}
+      <div class="snow-section-body">
+        <div class="snow-query-toolbar">
+          <button type="button" class="snow-copy-btn snow-copy-btn-inline" {{action "copyToClipboard" details.renderedQuery "copiedQuery"}} title="Copy SQL query">
+            {{fa-icon copyQueryIcon fixedWidth=true}} Copy SQL
+          </button>
+        </div>
+        <pre class="snow-query-pre"><code>{{details.renderedQuery}}</code></pre>
+      </div>
+    {{/if}}
   {{/if}}
 
 {{/if}}

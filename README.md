@@ -92,16 +92,29 @@ Score:THREAT_SCORE, :CATEGORY               → custom label / no label
 
 ## Async Query Handling
 
-If Snowflake does not return results within ~11 seconds (5 polling attempts), the overlay displays a **"Check Query Status"** button. Click it to re-poll — results will populate when the query completes.
+Queries are submitted asynchronously and polled for completion with exponential backoff (`[500ms, 1s, 2s, 3s, 4s]`, then `[6s, 8s, 10s]`). If a query exceeds the poll budget, it is **cancelled on the Snowflake server** to free the warehouse, and the overlay surfaces a `⏱ Query Cancelled` banner with the statement handle and remediation hints.
+
+If you regularly hit the cancel-on-timeout path, raise the **Query Timeout (s)** option, narrow the SQL `WHERE` clause, or lower the **Result Limit (rows)**.
+
+## Resilience Features (v1.0.0)
+
+- **5xx retry with idempotent `requestId`** — the integration retries up to 3 times on `502`/`503`/`504` responses with `[1s, 2s, 4s]` backoff, reusing the same `requestId` so Snowflake treats the request as a single logical operation.
+- **Warehouse-suspended detection** — error codes `000605`/`000627` are surfaced with a `❄️ Warehouse Suspended` pill and a banner explaining that Snowflake auto-resumes warehouses on first use. If the warehouse is resumed mid-query, a `❄️ Warehouse Resumed` summary tag is added.
+- **OAuth 401 affordance** — when an OAuth token is rejected, the overlay shows a `🔒 Auth Failed` banner with explicit instructions to refresh the OAuth token in integration settings. Key-pair 401s receive a different message indicating a credential or username/account mismatch.
+- **Connectivity probe in `validateOptions`** — saving integration settings now triggers a lightweight `GET /api/v2/statements/<sentinel-uuid>` probe to confirm the host is reachable and the credential is at least syntactically usable. DNS, host, and credential errors are surfaced as field-level errors before the configuration is committed.
+
+## Copy-to-Clipboard Affordances
+
+The result overlay exposes copy buttons for:
+- The **Statement Handle** in the Query Metadata section — useful for cross-referencing in Snowsight `QUERY_HISTORY`.
+- The **Rendered SQL Query** in the SQL Query collapsible section — paste directly into a Snowsight worksheet to reproduce or extend the lookup.
+
+Both buttons use the browser-native Clipboard API with an `execCommand('copy')` fallback. No content leaves the browser.
+
+## PII and Logging
+
+User identifiers (resolved Snowflake username, JWT claims, IDP claims, full key fingerprint) are logged at **TRACE** level only. INFO-level breadcrumbs include only the auth type, a short fingerprint prefix, and the JWT TTL. To debug auth issues, temporarily set `logging.level` to `trace` in `config.json`.
 
 ## Changelog
 
-### v1.0.0
-- Initial release
-- OAuth and Key-Pair JWT authentication
-- Async polling with exponential backoff
-- Configurable SQL query template with `?` bindings
-- Summary / Detail attribute filtering
-- Client-side filter and paging (5 rows/page)
-- Collapsible metadata section (statement handle, elapsed time, row count)
-- Truncation warning when Snowflake returns multiple result partitions
+See [CHANGELOG.md](./CHANGELOG.md) for the full v1.0.0 release notes.

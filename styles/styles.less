@@ -278,3 +278,95 @@
 .snow-section-body {
   padding: 4px 0 6px;
 }
+
+// ── INT-553 closeout additions ──────────────────────────────────────────────
+
+// Auth-failure variant of error banner
+.snow-banner-auth {
+  background-color: rgba(255, 77, 79, 0.12);
+  color: #ff4d4f;
+  border: 1px solid rgba(255, 77, 79, 0.3);
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+// Warehouse-suspended variant — yellow/amber tone
+.snow-banner-warehouse {
+  background-color: rgba(24, 144, 255, 0.10);
+  color: #1890ff;
+  border: 1px solid rgba(24, 144, 255, 0.3);
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+// Cancellation-on-timeout variant — orange tone
+.snow-banner-timeout {
+  background-color: rgba(250, 140, 22, 0.10);
+  color: #fa8c16;
+  border: 1px solid rgba(250, 140, 22, 0.3);
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+// Informational banner (warehouse-resumed-during-query)
+.snow-info-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  background-color: rgba(24, 144, 255, 0.08);
+  color: #1890ff;
+  border: 1px solid rgba(24, 144, 255, 0.25);
+}
+
+// Copy-to-clipboard buttons (statement handle, rendered query)
+.snow-copy-btn {
+  background: transparent;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  color: inherit;
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.7;
+  vertical-align: middle;
+  &:hover { opacity: 1; }
+}
+
+.snow-copy-btn-inline {
+  margin-left: 0;
+  padding: 2px 8px;
+}
+
+// Rendered SQL query display
+.snow-query-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.snow-query-pre {
+  background-color: rgba(128, 128, 128, 0.08);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.snow-mono {
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+}
+
+// Tiny vertical-rhythm helper used inside banner footnotes
+.mt-1 { margin-top: 4px; }

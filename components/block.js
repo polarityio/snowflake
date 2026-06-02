@@ -68,13 +68,24 @@ polarity.export = PolarityComponent.extend({
     return this.get('block._state.activeTab') === 'table' ? 'snow-tab snow-tab-active' : 'snow-tab';
   }),
 
+  // ── Copy-button visual feedback ──────────────────────────────────────────
+  copyHandleIcon: Ember.computed('block._state.copiedHandle', function () {
+    return this.get('block._state.copiedHandle') ? 'check' : 'copy';
+  }),
+
+  copyQueryIcon: Ember.computed('block._state.copiedQuery', function () {
+    return this.get('block._state.copiedQuery') ? 'check' : 'copy';
+  }),
+
   // ── Component lifecycle ───────────────────────────────────────────────────
   init() {
     this._super(...arguments);
     if (!this.get('block._state')) {
       this.set('block._state', {
         showMetadata: false,
-        checkingStatus: false,
+        showRenderedQuery: false,
+        copiedHandle: false,
+        copiedQuery: false,
         activeTab: 'cards'
       });
     }
@@ -106,19 +117,53 @@ polarity.export = PolarityComponent.extend({
     switchTab(tab) {
       this.set('block._state.activeTab', tab);
     },
-    checkQueryStatus() {
-      this.set('block._state.checkingStatus', true);
-      this.set('errorMessage', '');
-      this.sendIntegrationMessage({ action: 'CHECK_QUERY_STATUS', statementHandle: this.get('details.statementHandle') })
-        .then((result) => {
-          this.set('block.data', result);
-        })
-        .catch((err) => {
-          this.set('errorMessage', (err && err.detail) || 'Failed to check query status.');
-        })
-        .finally(() => {
-          this.set('block._state.checkingStatus', false);
-        });
+
+    /**
+     * Copies arbitrary text to the clipboard and sets a transient flag so
+     * the icon can switch to a checkmark for ~1.5s. Pure browser-side; no
+     * onMessage hop, no new dependency. See production usage in
+     * polarityio/dataminr-pulse, polarityio/cyberchef, polarityio/netscout-vast.
+     */
+    copyToClipboard(text, flag) {
+      const self = this;
+      const flagPath = `block._state.${flag}`;
+
+      const onCopied = () => {
+        self.set(flagPath, true);
+        Ember.run.later(() => {
+          if (!self.isDestroyed && !self.isDestroying) self.set(flagPath, false);
+        }, 1500);
+      };
+
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(onCopied).catch(() => {
+            // Fallback to execCommand
+            self._fallbackCopy(text, onCopied);
+          });
+        } else {
+          self._fallbackCopy(text, onCopied);
+        }
+      } catch (e) {
+        self.set('errorMessage', 'Clipboard copy failed in this browser.');
+      }
+    }
+  },
+
+  _fallbackCopy(text, onCopied) {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      onCopied();
+    } catch (e) {
+      this.set('errorMessage', 'Clipboard copy failed in this browser.');
     }
   }
 });
