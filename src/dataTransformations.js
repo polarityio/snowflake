@@ -1,6 +1,5 @@
 'use strict';
 
-const { get } = require('lodash');
 
 const TIMESTAMP_TYPES = new Set(['timestamp_ntz', 'timestamp_ltz', 'timestamp_tz', 'timestamp']);
 const DATE_TYPES = new Set(['date']);
