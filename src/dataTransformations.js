@@ -110,7 +110,7 @@ function buildJsonHtml(rawValue) {
  * JSON detection and expansion happens client-side in block.js to avoid
  * platform HTML-escaping of string values.
  */
-function buildDisplayAttributes(columnNames, columnTypes, rawRow, displayRaw, detailAttrList) {
+function buildDisplayAttributes(columnNames, _columnTypes, _rawRow, displayRaw, detailAttrList) {
   const buildAttr = (label, colName) => ({ key: label || colName, value: displayRaw[colName] });
 
   if (detailAttrList.length > 0) {
