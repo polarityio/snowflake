@@ -158,7 +158,7 @@ polarity.export = PolarityComponent.extend({
         });
     },
     copyText(text) {
-      if (navigator && navigator.clipboard) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
         navigator.clipboard.writeText(text).catch(() => {});
       }
     }
