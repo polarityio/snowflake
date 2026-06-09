@@ -2,34 +2,149 @@
 
 const { get } = require('lodash');
 
+const TIMESTAMP_TYPES = new Set(['timestamp_ntz', 'timestamp_ltz', 'timestamp_tz', 'timestamp']);
+const DATE_TYPES = new Set(['date']);
+const TIME_TYPES = new Set(['time']);
+const SEMI_STRUCTURED_TYPES = new Set(['variant', 'object', 'array']);
+
+function formatTimestamp(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') return rawValue;
+  const stripped = String(rawValue).split(' ')[0];
+  const secs = parseFloat(stripped);
+  if (!isFinite(secs)) return rawValue;
+  const ms = Math.round(secs * 1000);
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return rawValue;
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} UTC`
+  );
+}
+
+function formatDate(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') return rawValue;
+  const days = parseInt(rawValue, 10);
+  if (!isFinite(days)) return rawValue;
+  const d = new Date(days * 86400000);
+  if (isNaN(d.getTime())) return rawValue;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+function formatTime(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') return rawValue;
+  const str = String(rawValue);
+  const dotIndex = str.indexOf('.');
+  if (dotIndex !== -1) return str.slice(0, dotIndex);
+  return str;
+}
+
 /**
- * Parses a Snowflake ResultSet (200 response) into an array of plain row objects.
+ * Parses a semi-structured value and returns an array of {key, value} sub-attributes,
+ * or null if the value is a scalar/unparseable.
  *
- * Snowflake returns:
- *   resultSetMetaData.rowType  → [{ name, type, ... }, ...]
- *   data                       → [["val1", "val2"], ...]
- *
- * We map each row array to { COLUMN_NAME: "value" } using the rowType column names.
- * Column names are normalised to UPPERCASE to match Snowflake's convention.
- *
- * Then we apply the detailAttrList filter and itemTitleAttr to shape the display object:
- * {
- *   title: "value of itemTitleAttr column or null",
- *   attributes: [{ key: "Label", value: "val" }, ...],
- *   raw: { COLUMN: value, ... }          ← full row for summary tag access
- * }
- *
- * @param {object} resultSet - Snowflake ResultSet body
- * @param {Array<{label:string, column:string}>} detailAttrList - parsed detail attr config
- * @param {string} itemTitleAttr - uppercase column name to use as row title
- * @returns {Array<object>} mapped display rows
+ * Objects → [{key: "fieldName", value: "..."}, ...]
+ * Arrays  → [{key: "[0]", value: "..."}, ...]
  */
+function parseSemiStructured(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(rawValue);
+  } catch (_) {
+    return null; // not valid JSON — fall back to raw string
+  }
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return [{ key: '(empty)', value: '' }];
+    return parsed.map((item, i) => ({
+      key: `[${i}]`,
+      value: typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item ?? 'null')
+    }));
+  }
+  if (typeof parsed === 'object' && parsed !== null) {
+    const entries = Object.entries(parsed);
+    if (entries.length === 0) return [{ key: '(empty)', value: '' }];
+    return entries.map(([k, v]) => ({
+      key: k,
+      value: typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? 'null')
+    }));
+  }
+  // Scalar (string/number/bool) — just return as string
+  return null;
+}
+
+/**
+ * Returns true if a string value looks like a JSON object or array.
+ */
+function looksLikeJson(val) {
+  if (typeof val !== 'string') return false;
+  const t = val.trim();
+  return (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
+}
+
+/**
+ * Builds an HTML string representing a JSON object/array for inline rendering.
+ * Produces a table of key → value rows. Falls back to escaped raw string on failure.
+ */
+function buildJsonHtml(rawValue) {
+  const entries = parseSemiStructured(rawValue);
+  if (!entries) return null;
+  const escHtml = (s) =>
+    String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  const rows = entries
+    .map(
+      ({ key, value }) =>
+        `<tr><td class="snow-j-k">${escHtml(key)}</td>` +
+        `<td class="snow-j-v">${escHtml(value)}</td></tr>`
+    )
+    .join('');
+  return `<table class="snow-json-tbl">${rows}</table>`;
+}
+
+/**
+ * Maps a single row's columns into display attribute objects: { key, value }
+ * JSON detection and expansion happens client-side in block.js to avoid
+ * platform HTML-escaping of string values.
+ */
+function buildDisplayAttributes(columnNames, columnTypes, rawRow, displayRaw, detailAttrList) {
+  const buildAttr = (label, colName) => ({ key: label || colName, value: displayRaw[colName] });
+
+  if (detailAttrList.length > 0) {
+    return detailAttrList
+      .filter(({ column }) => Object.prototype.hasOwnProperty.call(displayRaw, column))
+      .map(({ label, column }) => buildAttr(label, column));
+  }
+  return columnNames.map((col) => buildAttr(col, col));
+}
+
+function formatCellValue(rawValue, colType) {
+  if (TIMESTAMP_TYPES.has(colType)) return formatTimestamp(rawValue);
+  if (DATE_TYPES.has(colType)) return formatDate(rawValue);
+  if (TIME_TYPES.has(colType)) return formatTime(rawValue);
+  // Round floats to avoid IEEE 754 noise (e.g. 48.853409999999997 -> 48.85341)
+  if (colType === 'real' && rawValue !== null && rawValue !== undefined && rawValue !== '') {
+    const n = Number(rawValue);
+    if (isFinite(n)) return parseFloat(n.toPrecision(7));
+  }
+  // Semi-structured types are handled via buildDisplayAttributes, not here
+  return rawValue;
+}
+
 function mapResultRows(resultSet, detailAttrList, itemTitleAttr) {
   const rowType = resultSet?.resultSetMetaData?.rowType || [];
   const data = resultSet?.data || [];
 
-  // Build column name index (UPPERCASE)
   const columnNames = rowType.map((col) => col.name.toUpperCase());
+  const columnTypes = {};
+  rowType.forEach((col) => {
+    columnTypes[col.name.toUpperCase()] = (col.type || '').toLowerCase();
+  });
+
 
   const rows = data.map((rowArray, rowIndex) => {
     const raw = {};
@@ -37,40 +152,32 @@ function mapResultRows(resultSet, detailAttrList, itemTitleAttr) {
       raw[colName] = rowArray[i] ?? null;
     });
 
-    // Apply detail attribute filter — if empty, show all columns
-    let displayAttributes;
-    if (detailAttrList.length > 0) {
-      displayAttributes = detailAttrList
-        .filter(({ column }) => raw.hasOwnProperty(column))
-        .map(({ label, column }) => ({ key: label || column, value: raw[column] }));
-    } else {
-      displayAttributes = columnNames.map((col) => ({ key: col, value: raw[col] }));
-    }
+    const displayRaw = {};
+    columnNames.forEach((colName) => {
+      const colType = columnTypes[colName] || '';
+      displayRaw[colName] = formatCellValue(raw[colName], colType);
+    });
 
-    const title = itemTitleAttr && raw.hasOwnProperty(itemTitleAttr)
-      ? String(raw[itemTitleAttr])
+    const displayAttributes = buildDisplayAttributes(
+      columnNames, columnTypes, raw, displayRaw, detailAttrList
+    );
+
+    const title = itemTitleAttr && Object.prototype.hasOwnProperty.call(displayRaw, itemTitleAttr)
+      ? String(displayRaw[itemTitleAttr])
       : null;
 
     return {
       index: rowIndex + 1,
       title,
       attributes: displayAttributes,
-      raw, // retained for summary tag resolution
-      resultAsString: JSON.stringify(raw).toLowerCase() // for the filter input
+      raw,
+      resultAsString: JSON.stringify(raw).toLowerCase()
     };
   });
 
   return rows;
 }
 
-/**
- * Builds the summary tag array from the first N result rows.
- *
- * summaryAttrList: [{ label, column }, ...]
- *   - If no attrs configured: returns ["N Results"] count badge
- *   - For each configured attr: shows "<label>: value" or just "value" if no label
- *   - Capped at maxSummaryItems total tags
- */
 function buildSummaryTags(rows, summaryAttrList, maxSummaryItems) {
   if (rows.length === 0) return [];
 
@@ -93,18 +200,9 @@ function buildSummaryTags(rows, summaryAttrList, maxSummaryItems) {
   if (tags.length === 0) {
     return [`${rows.length} Result${rows.length === 1 ? '' : 's'}`];
   }
-
   return tags;
 }
 
-/**
- * Parses a comma-delimited attribute string into an array of { label, column } objects.
- *
- * Format options:
- *   "COLUMN_NAME"             → { label: "COLUMN_NAME", column: "COLUMN_NAME" }
- *   "My Label:COLUMN_NAME"    → { label: "My Label", column: "COLUMN_NAME" }
- *   ":COLUMN_NAME"            → { label: "", column: "COLUMN_NAME" }  (no label)
- */
 function parseAttributeList(attrString) {
   if (!attrString || !attrString.trim()) return [];
   return attrString
@@ -113,7 +211,6 @@ function parseAttributeList(attrString) {
       const trimmed = entry.trim();
       const colonIndex = trimmed.indexOf(':');
       if (colonIndex === -1) {
-        // No colon → use column name as label
         const column = trimmed.toUpperCase();
         return { label: column, column };
       }
@@ -124,9 +221,6 @@ function parseAttributeList(attrString) {
     .filter(({ column }) => column.length > 0);
 }
 
-/**
- * Converts any thrown error/object into a readable JSON-safe object for logging.
- */
 function parseErrorToReadableJSON(error) {
   return error instanceof Error
     ? {

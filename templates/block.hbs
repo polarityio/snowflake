@@ -78,7 +78,7 @@
   {{/if}}
 
   {{! Result rows }}
-  {{#each pagedData as |row|}}
+  {{#each transformedPagedData as |row|}}
     <div class="snow-result-card">
       <div class="p-title snow-result-title">
         {{fa-icon "table" fixedWidth=true}}
@@ -91,7 +91,18 @@
       {{#each row.attributes as |attr|}}
         <div class="snow-attr-row">
           <span class="p-key">{{attr.key}}:</span>
-          <span class="p-value">{{attr.value}}</span>
+          {{#if attr.parsedEntries}}
+            <table class="snow-j-tbl">
+              {{#each attr.parsedEntries as |pair|}}
+                <tr>
+                  <td class="snow-j-k">{{pair.k}}</td>
+                  <td class="snow-j-v">{{pair.v}}</td>
+                </tr>
+              {{/each}}
+            </table>
+          {{else}}
+            <span class="p-value">{{attr.value}}</span>
+          {{/if}}
         </div>
       {{/each}}
     </div>
