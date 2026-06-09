@@ -159,7 +159,9 @@ polarity.export = PolarityComponent.extend({
     },
     copyText(text) {
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
-        navigator.clipboard.writeText(text).catch(() => {});
+        navigator.clipboard.writeText(text).catch(() => {
+          this.set('errorMessage', 'Failed to copy statement handle.');
+        });
       }
     }
   }
