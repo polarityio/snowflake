@@ -28,12 +28,104 @@ function computePublicKeyFingerprint(publicKeyDer) {
 }
 
 /**
+ * Normalises a PEM string for use with Node.js crypto.
+ *
+ * Polarity can corrupt PEM storage in two ways:
+ *   1. Literal \n sequences instead of real newlines (escaped storage)
+ *   2. Spaces substituted for newlines (Polarity textarea storage)
+ *
+ * In both cases the base64 body is valid — only the line-break structure is wrong.
+ * We reconstruct the PEM with proper newlines so crypto.createPrivateKey can parse it.
+ */
+function normalizePem(pem) {
+  if (!pem) return '';
+
+  // Step 1: restore escaped newlines (literal backslash-n → real newline)
+  let s = pem
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .trim();
+
+  // Step 2: locate PEM header and footer
+  const headerMatch = s.match(/-----BEGIN ([A-Z ]+)-----/);
+  const footerMatch = s.match(/-----END ([A-Z ]+)-----/);
+  if (!headerMatch || !footerMatch) return s;
+
+  const type = headerMatch[1];
+  const header = `-----BEGIN ${type}-----`;
+  const footer = `-----END ${type}-----`;
+
+  const bodyStart = s.indexOf(header) + header.length;
+  const bodyEnd = s.lastIndexOf(footer);
+  const rawBody = s.slice(bodyStart, bodyEnd);
+
+  // Step 3: strip ALL whitespace from base64 body (base64 never uses spaces)
+  const cleanBase64 = rawBody.replace(/\s+/g, '');
+  if (!cleanBase64) return s;
+
+  // Step 4: re-wrap at 64 chars per line (standard PEM) and reassemble
+  const wrapped = (cleanBase64.match(/.{1,64}/g) || []).join('\n');
+  return `${header}\n${wrapped}\n${footer}`;
+}
+
+/**
  * Extracts the public key in DER format from the PEM private key.
+ * Tries PKCS#8 (preferred) then PKCS#1 (legacy fallback) to maximise compatibility.
  */
 function extractPublicKeyDer(privateKeyPem, passphrase) {
-  const keyObject = passphrase
-    ? crypto.createPrivateKey({ key: privateKeyPem, passphrase })
-    : crypto.createPrivateKey(privateKeyPem);
+  const normalizedPem = normalizePem(privateKeyPem);
+  const pemHeader = normalizedPem.split('\n')[0] || '(empty)';
+
+  const tryLoad = (opts) => crypto.createPrivateKey(opts);
+
+  let keyObject;
+  try {
+    // Primary: auto-detect (works for PKCS#8 encrypted/unencrypted, PKCS#1 unencrypted)
+    keyObject = passphrase
+      ? tryLoad({ key: normalizedPem, passphrase, format: 'pem' })
+      : tryLoad({ key: normalizedPem, format: 'pem' });
+  } catch (primaryErr) {
+    // Fallback: explicit PKCS#1 unencrypted (no passphrase) — for BEGIN RSA PRIVATE KEY
+    if (!passphrase) {
+      try {
+        keyObject = tryLoad({ key: normalizedPem, format: 'pem', type: 'pkcs1' });
+      } catch (_) {
+        // fall through to the descriptive error below
+      }
+    }
+    if (!keyObject) {
+      // Build a user-actionable error message based on the PEM header
+      const isEncryptedPkcs1 =
+        pemHeader.includes('RSA PRIVATE KEY') &&
+        normalizedPem.includes('Proc-Type: 4,ENCRYPTED');
+      const isLegacyCipher =
+        normalizedPem.includes('DEK-Info: DES-EDE3') || normalizedPem.includes('DEK-Info: DES');
+
+      let hint =
+        `Private key header: "${pemHeader}". ` +
+        'This Node.js version (18+) uses OpenSSL 3.x which dropped legacy cipher support. ';
+
+      if (isEncryptedPkcs1 || isLegacyCipher) {
+        hint +=
+          'Your key is encrypted with a legacy algorithm (3DES/DES). ' +
+          'Regenerate it using AES-256 PKCS#8: ' +
+          'openssl pkcs8 -topk8 -v2 aes256 -in your_old_key.pem -out rsa_key.p8';
+      } else if (pemHeader.includes('RSA PRIVATE KEY')) {
+        hint +=
+          'Your PKCS#1 key may need to be converted to PKCS#8: ' +
+          'openssl pkcs8 -topk8 -nocrypt -in your_key.pem -out rsa_key.p8';
+      } else {
+        hint +=
+          `Original error: ${primaryErr.message}. ` +
+          'Ensure your key is a Snowflake-compatible RSA PKCS#8 key generated with: ' +
+          'openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 aes256 -out rsa_key.p8';
+      }
+
+      throw new Error(hint);
+    }
+  }
+
   return crypto.createPublicKey(keyObject).export({ type: 'spki', format: 'der' });
 }
 
@@ -48,10 +140,11 @@ function extractPublicKeyDer(privateKeyPem, passphrase) {
  * @returns {{ token: string, expiresAt: number }} expiresAt is epoch milliseconds
  */
 function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassphrase }) {
+  const normalizedKey = normalizePem(privateKey);
   const account = normalizeAccountForJwt(accountIdentifier);
   const user = username.toUpperCase();
 
-  const publicKeyDer = extractPublicKeyDer(privateKey, privateKeyPassphrase || undefined);
+  const publicKeyDer = extractPublicKeyDer(normalizedKey, privateKeyPassphrase || undefined);
   const fingerprint = computePublicKeyFingerprint(publicKeyDer);
 
   const iat = Math.floor(Date.now() / 1000);
@@ -64,13 +157,22 @@ function generateJwt({ accountIdentifier, username, privateKey, privateKeyPassph
     exp
   };
 
-  const keyObject = privateKeyPassphrase
-    ? crypto.createPrivateKey({ key: privateKey, passphrase: privateKeyPassphrase })
-    : crypto.createPrivateKey(privateKey);
+  let signingKey;
+  try {
+    signingKey = privateKeyPassphrase
+      ? crypto.createPrivateKey({ key: normalizedKey, passphrase: privateKeyPassphrase, format: 'pem' })
+      : crypto.createPrivateKey({ key: normalizedKey, format: 'pem' });
+  } catch (e) {
+    if (!privateKeyPassphrase) {
+      signingKey = crypto.createPrivateKey({ key: normalizedKey, format: 'pem', type: 'pkcs1' });
+    } else {
+      throw e;
+    }
+  }
 
-  const token = jwt.sign(payload, keyObject, { algorithm: 'RS256' });
+  const token = jwt.sign(payload, signingKey, { algorithm: 'RS256' });
 
-  return { token, expiresAt: (exp - JWT_REFRESH_BUFFER_SECONDS) * 1000 };
+  return { token, expiresAt: (exp - JWT_REFRESH_BUFFER_SECONDS) * 1000, fingerprint, jwtIss: payload.iss, jwtSub: payload.sub };
 }
 
 /**

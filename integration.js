@@ -9,6 +9,25 @@ let Logger;
 // JWT cache: { token, expiresAt }
 let jwtCache = null;
 
+/**
+ * Normalizes a Polarity option value regardless of how the server delivers it.
+ *
+ * Different Polarity server versions pass options in different shapes:
+ *   - Plain value:               options.key  === 'the string'
+ *   - Single-wrapped:            options.key  === { value: 'the string' }
+ *   - Double-wrapped (selects):  options.key  === { value: { value: 'oauth', label: '...' } }
+ *
+ * This helper always returns the innermost scalar value (or '' if absent).
+ */
+function getOpt(options, key) {
+  const raw = options[key];
+  if (raw === null || raw === undefined) return '';
+  if (typeof raw !== 'object') return raw; // plain string/number/boolean
+  const v = raw.value;
+  if (v !== null && v !== undefined && typeof v === 'object' && 'value' in v) return v.value; // double-wrapped
+  return v ?? ''; // single-wrapped
+}
+
 const MAX_POLL_ATTEMPTS = 5;
 const POLL_INTERVALS_MS = [500, 1000, 2000, 3000, 4000];
 
@@ -22,9 +41,26 @@ const startup = (logger) => {
  * For Key-Pair JWT: generates a fresh JWT or returns the cached one if still valid.
  */
 async function getToken(options) {
-  const authType = options.authType.value;
+  const authTypeRaw = options.authType;
+  const authType = getOpt(options, 'authType');
+  const oauthTokenRaw = options.oauthToken;
+  const oauthTokenResolved = getOpt(options, 'oauthToken');
+
+  Logger.info(
+    {
+      authTypeRaw: typeof authTypeRaw === 'object' ? JSON.stringify(authTypeRaw) : authTypeRaw,
+      authTypeResolved: authType,
+      authTypeMatch: authType === 'oauth',
+      oauthTokenRawType: typeof oauthTokenRaw,
+      oauthTokenRawIsObject: typeof oauthTokenRaw === 'object',
+      oauthTokenRawObjectKeys: typeof oauthTokenRaw === 'object' && oauthTokenRaw ? Object.keys(oauthTokenRaw) : null,
+      oauthTokenResolvedLength: oauthTokenResolved ? oauthTokenResolved.length : 0
+    },
+    'getToken diagnostics'
+  );
+
   if (authType === 'oauth') {
-    return options.oauthToken;
+    return oauthTokenResolved;
   }
 
   // Key-pair JWT — use cache unless expired
@@ -34,34 +70,53 @@ async function getToken(options) {
   }
 
   Logger.debug('Generating new JWT for key-pair auth');
-  const { token, expiresAt } = generateJwt({
-    accountIdentifier: options.accountIdentifier,
-    username: options.username,
-    privateKey: options.privateKey,
-    privateKeyPassphrase: options.privateKeyPassphrase || ''
+  const rawPrivateKey = getOpt(options, 'privateKey');
+  const normalizedForDiag = (rawPrivateKey || '').replace(/\\n/g, '\n').replace(/\\r/g, '').trim();
+  const pemHeader = normalizedForDiag.split('\n')[0] || '(empty)';
+  Logger.info(
+    {
+      pemHeader,
+      keyLength: normalizedForDiag.length,
+      hasPassphrase: !!(getOpt(options, 'privateKeyPassphrase')),
+      username: getOpt(options, 'username'),
+      accountIdentifier: getOpt(options, 'accountIdentifier')
+    },
+    'getToken key-pair diagnostics'
+  );
+  const { token, expiresAt, fingerprint, jwtIss, jwtSub } = generateJwt({
+    accountIdentifier: getOpt(options, 'accountIdentifier'),
+    username: getOpt(options, 'username'),
+    privateKey: getOpt(options, 'privateKey'),
+    privateKeyPassphrase: getOpt(options, 'privateKeyPassphrase')
   });
+  Logger.info(
+    {
+      fingerprint,
+      jwtIss,
+      jwtSub,
+      hint: 'Run in Snowflake: DESCRIBE USER POLARITY_EXTSVC; and compare RSA_PUBLIC_KEY_FP value against fingerprint above.'
+    },
+    'JWT generated — verify fingerprint matches Snowflake'
+  );
   jwtCache = { token, expiresAt };
   return token;
 }
 
 /**
  * Polls a pending statement handle until complete or max attempts reached.
- * If max attempts are exceeded the query is cancelled (per Snowflake SQL API spec)
- * and { complete: false, timedOut: true } is returned.
+ * Returns { complete: true, rows, metadata } or { complete: false, statementHandle, elapsed }.
  */
 async function pollToCompletion(statementHandle, baseUrl, token, authType, startTime) {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
     await sleep(POLL_INTERVALS_MS[attempt]);
-    const result = await pollStatement({ baseUrl, token, authType, statementHandle });
+    const result = await pollStatement({ baseUrl, token, authType, statementHandle, logger: Logger });
     if (result.status === 200) {
       return { complete: true, resultSet: result.body, elapsedMs: Date.now() - startTime };
     }
     Logger.debug({ attempt, statementHandle }, 'Query still running — retrying poll');
   }
-  // Exceeded poll budget — cancel per spec to free Snowflake compute resources
-  await cancelStatement({ baseUrl, token, authType, statementHandle });
-  Logger.debug({ statementHandle }, 'Cancelled long-running query after max poll attempts');
-  return { complete: false, timedOut: true, statementHandle, elapsedMs: Date.now() - startTime };
+  // Exceeded poll budget — return handle for the frontend "Check Status" button
+  return { complete: false, statementHandle, elapsedMs: Date.now() - startTime };
 }
 
 function sleep(ms) {
@@ -80,7 +135,7 @@ function buildBaseUrl(accountIdentifier) {
  * where every position receives the same entity value.
  */
 function buildBindings(query, entityValue, bindingType) {
-  const matches = query.match(/\?/g) || [];
+  const matches = (query || '').match(/\?/g) || [];
   const bindings = {};
   matches.forEach((_, i) => {
     bindings[String(i + 1)] = { type: bindingType, value: entityValue };
@@ -100,17 +155,42 @@ const doLookup = async (entities, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials in integration settings.', err: readable });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier);
-  const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
-  const bindingType = options.bindingType.value;
-  const query = options.query;
-  const queryTimeout = Number(options.queryTimeout) || 30;
-  const resultLimit = Number(options.resultLimit) || 100;
+  const baseUrl = buildBaseUrl(getOpt(options, 'accountIdentifier'));
+  const authType = getOpt(options, 'authType') === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
+  const bindingType = getOpt(options, 'bindingType');
+  const query = getOpt(options, 'query');
 
-  const summaryAttrList = parseAttributeList(options.summaryAttributes);
-  const detailAttrList = parseAttributeList(options.detailAttributes);
-  const itemTitleAttr = (options.itemTitleAttribute || '').trim().toUpperCase();
-  const maxSummaryItems = Number(options.maxSummaryItems) || 3;
+  Logger.trace(
+    {
+      'options.query (raw)': options.query,
+      queryResolved: query
+    },
+    'doLookup options.query diagnostic'
+  );
+  const queryTimeout = Number(getOpt(options, 'queryTimeout')) || 30;
+  const resultLimit = Number(getOpt(options, 'resultLimit')) || 100;
+
+  const summaryAttrList = parseAttributeList(getOpt(options, 'summaryAttributes'));
+  const detailAttrList = parseAttributeList(getOpt(options, 'detailAttributes'));
+  const itemTitleAttr = (getOpt(options, 'itemTitleAttribute') || '').trim().toUpperCase();
+  const maxSummaryItems = Number(getOpt(options, 'maxSummaryItems')) || 3;
+
+  Logger.trace(
+    {
+      baseUrl,
+      authType,
+      bindingType,
+      query,
+      queryTimeout,
+      resultLimit,
+      summaryAttrList,
+      detailAttrList,
+      itemTitleAttr,
+      maxSummaryItems,
+      tokenLength: token ? token.length : 0
+    },
+    'doLookup resolved options'
+  );
 
   const lookupResults = await Promise.all(
     entities.map(async (entity) => {
@@ -118,7 +198,14 @@ const doLookup = async (entities, options, cb) => {
       let statementHandle;
 
       try {
+        if (!query) {
+          Logger.warn({ entity: entity.value }, 'No SQL query configured — skipping lookup');
+          return { entity, data: null };
+        }
         const bindings = buildBindings(query, entity.value, bindingType);
+
+        Logger.trace({ entity: entity.value, bindings }, 'Built bindings for entity');
+
         const body = {
           statement: query,
           timeout: queryTimeout,
@@ -129,33 +216,53 @@ const doLookup = async (entities, options, cb) => {
           },
           bindings
         };
-        if (options.warehouse) body.warehouse = options.warehouse;
-        if (options.database) body.database = options.database;
-        if (options.schema) body.schema = options.schema;
-        if (options.role) body.role = options.role;
+        if (getOpt(options, 'warehouse')) body.warehouse = getOpt(options, 'warehouse');
+        if (getOpt(options, 'database')) body.database = getOpt(options, 'database');
+        if (getOpt(options, 'schema')) body.schema = getOpt(options, 'schema');
+        if (getOpt(options, 'role')) body.role = getOpt(options, 'role');
 
-        const submitResult = await submitStatement({ baseUrl, token, authType, body });
+        Logger.trace({ entity: entity.value, requestBody: body }, 'Submitting statement to Snowflake');
+
+        const submitResult = await submitStatement({ baseUrl, token, authType, body, logger: Logger });
+
+        Logger.trace(
+          { entity: entity.value, status: submitResult.status, body: submitResult.body },
+          'Statement submit response'
+        );
 
         if (submitResult.status === 200) {
-          // Synchronous result
-          return buildLookupResult(entity, submitResult.body, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, Date.now() - startTime);
+          const numRows = submitResult.body?.resultSetMetaData?.numRows;
+          const columnNames = (submitResult.body?.resultSetMetaData?.rowType || []).map((c) => c.name);
+          Logger.trace({ entity: entity.value, numRows, columnNames }, 'Synchronous result received');
+          return buildLookupResult(entity, submitResult.body, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, Date.now() - startTime, Logger);
         }
 
         if (submitResult.status === 202) {
           // Async — poll
           statementHandle = submitResult.body.statementHandle;
+          Logger.trace({ entity: entity.value, statementHandle }, 'Async execution — beginning poll');
           const pollResult = await pollToCompletion(statementHandle, baseUrl, token, authType, startTime);
 
           if (pollResult.complete) {
-            return buildLookupResult(entity, pollResult.resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, pollResult.elapsedMs);
+            const numRows = pollResult.resultSet?.resultSetMetaData?.numRows;
+            const columnNames = (pollResult.resultSet?.resultSetMetaData?.rowType || []).map((c) => c.name);
+            Logger.trace({ entity: entity.value, numRows, columnNames, elapsedMs: pollResult.elapsedMs }, 'Poll complete — result received');
+            return buildLookupResult(entity, pollResult.resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, pollResult.elapsedMs, Logger);
           }
 
-          // Timed out — query was cancelled; surface a clear error
-          return buildErrorResult(
+          Logger.trace({ entity: entity.value, statementHandle, elapsedMs: pollResult.elapsedMs }, 'Poll budget exhausted — returning pending state');
+          return {
             entity,
-            `Query timed out after ${(pollResult.elapsedMs / 1000).toFixed(1)}s and was cancelled. ` +
-              `Try increasing the Query Timeout setting or simplifying your SQL.`
-          );
+            data: {
+              summary: ['⏳ Query Running'],
+              details: {
+                complete: false,
+                statementHandle,
+                elapsedMs: pollResult.elapsedMs,
+                executionStats: { elapsedSeconds: (pollResult.elapsedMs / 1000).toFixed(1) }
+              }
+            }
+          };
         }
 
         // Unexpected status from submit
@@ -172,14 +279,39 @@ const doLookup = async (entities, options, cb) => {
   cb(null, lookupResults);
 };
 
-function buildLookupResult(entity, resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, elapsedMs) {
+function buildLookupResult(entity, resultSet, summaryAttrList, detailAttrList, itemTitleAttr, maxSummaryItems, elapsedMs, Logger) {
+  Logger.trace(
+    {
+      entity: entity.value,
+      resultSetMetaData: resultSet?.resultSetMetaData,
+      dataRowCount: resultSet?.data?.length ?? 0,
+      statementHandle: resultSet?.statementHandle,
+      message: resultSet?.message
+    },
+    'buildLookupResult — raw resultSet metadata'
+  );
+
   const rows = mapResultRows(resultSet, detailAttrList, itemTitleAttr);
 
+  Logger.trace(
+    {
+      entity: entity.value,
+      mappedRowCount: rows.length,
+      detailAttrList,
+      itemTitleAttr,
+      firstRow: rows[0] || null
+    },
+    'buildLookupResult — after mapResultRows'
+  );
+
   if (rows.length === 0) {
+    Logger.trace({ entity: entity.value }, 'buildLookupResult — 0 rows mapped → returning null (no overlay)');
     return { entity, data: null };
   }
 
   const summaryTags = buildSummaryTags(rows, summaryAttrList, maxSummaryItems);
+
+  Logger.trace({ entity: entity.value, summaryTags }, 'buildLookupResult — summary tags built');
   const { resultSetMetaData, statementHandle, message } = resultSet;
   const partitionCount = (resultSetMetaData?.partitionInfo || []).length;
   const isTruncated = partitionCount > 1;
@@ -234,18 +366,18 @@ const onMessage = async (payload, options, cb) => {
     return cb({ detail: 'Authentication failed — check credentials.' });
   }
 
-  const baseUrl = buildBaseUrl(options.accountIdentifier);
-  const authType = options.authType.value === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
+  const baseUrl = buildBaseUrl(getOpt(options, 'accountIdentifier'));
+  const authType = getOpt(options, 'authType') === 'oauth' ? 'OAUTH' : 'KEYPAIR_JWT';
   const { statementHandle } = payload;
 
   try {
-    const result = await pollStatement({ baseUrl, token, authType, statementHandle });
+    const result = await pollStatement({ baseUrl, token, authType, statementHandle, logger: Logger });
 
     if (result.status === 200) {
-      const summaryAttrList = parseAttributeList(options.summaryAttributes);
-      const detailAttrList = parseAttributeList(options.detailAttributes);
-      const itemTitleAttr = (options.itemTitleAttribute || '').trim().toUpperCase();
-      const maxSummaryItems = Number(options.maxSummaryItems) || 3;
+      const summaryAttrList = parseAttributeList(getOpt(options, 'summaryAttributes'));
+      const detailAttrList = parseAttributeList(getOpt(options, 'detailAttributes'));
+      const itemTitleAttr = (getOpt(options, 'itemTitleAttribute') || '').trim().toUpperCase();
+      const maxSummaryItems = Number(getOpt(options, 'maxSummaryItems')) || 3;
 
       const rows = mapResultRows(result.body, detailAttrList, itemTitleAttr);
       const summaryTags = buildSummaryTags(rows, summaryAttrList, maxSummaryItems);
@@ -286,28 +418,25 @@ const onMessage = async (payload, options, cb) => {
 const validateOptions = async (options, callback) => {
   const errors = [];
 
-  // Account identifier required
-  if (!options.accountIdentifier || !options.accountIdentifier.value) {
+  if (!getOpt(options, 'accountIdentifier')) {
     errors.push({ key: 'accountIdentifier', message: 'You must provide a Snowflake Account Identifier.' });
   }
 
-  // Auth-type-specific validation
-  const authType = options.authType?.value?.value || options.authType?.value;
+  const authType = getOpt(options, 'authType');
   if (authType === 'oauth') {
-    if (!options.oauthToken || !options.oauthToken.value) {
+    if (!getOpt(options, 'oauthToken')) {
       errors.push({ key: 'oauthToken', message: 'An OAuth Token is required when Authentication Type is set to "OAuth Token".' });
     }
   } else if (authType === 'keypair') {
-    if (!options.username || !options.username.value) {
+    if (!getOpt(options, 'username')) {
       errors.push({ key: 'username', message: 'A Username is required for Key-Pair JWT authentication.' });
     }
-    if (!options.privateKey || !options.privateKey.value) {
+    if (!getOpt(options, 'privateKey')) {
       errors.push({ key: 'privateKey', message: 'A Private Key (PEM) is required for Key-Pair JWT authentication.' });
     }
   }
 
-  // SQL query required
-  if (!options.query || !options.query.value) {
+  if (!getOpt(options, 'query')) {
     errors.push({ key: 'query', message: 'You must provide a SQL Query Template.' });
   }
 

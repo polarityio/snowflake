@@ -96,13 +96,23 @@ polarity.export = PolarityComponent.extend({
     return (this.get('filteredPagingData.length') || 0) > this.get('pageSize');
   }),
 
+  // ── Tab class helpers ─────────────────────────────────────────────────────
+  cardsTabClass: Ember.computed('block._state.activeTab', function () {
+    return this.get('block._state.activeTab') === 'cards' ? 'snow-tab snow-tab-active' : 'snow-tab';
+  }),
+
+  tableTabClass: Ember.computed('block._state.activeTab', function () {
+    return this.get('block._state.activeTab') === 'table' ? 'snow-tab snow-tab-active' : 'snow-tab';
+  }),
+
   // ── Component lifecycle ───────────────────────────────────────────────────
   init() {
     this._super(...arguments);
     if (!this.get('block._state')) {
       this.set('block._state', {
         showMetadata: false,
-        checkingStatus: false
+        checkingStatus: false,
+        activeTab: 'cards'
       });
     }
   },
@@ -129,6 +139,9 @@ polarity.export = PolarityComponent.extend({
     toggleSection(key) {
       const path = `block._state.${key}`;
       this.set(path, !this.get(path));
+    },
+    switchTab(tab) {
+      this.set('block._state.activeTab', tab);
     },
     checkQueryStatus() {
       this.set('block._state.checkingStatus', true);
