@@ -3,7 +3,7 @@
   "name": "Snowflake",
   "acronym": "SNOW",
   "description": "Query Snowflake with an admin-defined SQL template and display results directly in the Polarity overlay.",
-  "entityTypes": ["IPv4", "IPv6", "domain", "url", "email", "MD5", "SHA1", "SHA256", "cve", "MAC"],
+  "dataTypes": ["IPv4", "IPv6", "domain", "url", "email", "MD5", "SHA1", "SHA256", "cve", "MAC"],
   "supportsAdditionalCustomTypes": true,
   "defaultColor": "light-blue",
   "styles": ["./styles/styles.less"],
@@ -11,10 +11,6 @@
   "block": {
     "component": { "file": "./components/block.js" },
     "template": { "file": "./templates/block.hbs" }
-  },
-  "request": {
-    "cert": "", "key": "", "passphrase": "", "ca": "", "proxy": "",
-    "rejectUnauthorized": true
   },
   "logging": { "level": "info" },
   "options": [
