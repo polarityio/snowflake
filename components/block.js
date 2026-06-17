@@ -45,6 +45,43 @@ polarity.export = PolarityComponent.extend({
     return data.slice(start, start + this.get('pageSize'));
   }),
 
+  // ── JSON expansion (client-side, runs after Elixir processing) ────────────
+  transformedPagedData: Ember.computed('pagedData.[]', function () {
+    function looksLikeJson(val) {
+      if (typeof val !== 'string' || val.length < 2) return false;
+      const t = val.trim();
+      return (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
+    }
+
+    return (this.get('pagedData') || []).map(function (row) {
+      const attrs = (row.attributes || []).map(function (attr) {
+        if (!looksLikeJson(attr.value)) return attr;
+        try {
+          const parsed = JSON.parse(attr.value.trim());
+          if (typeof parsed !== 'object' || parsed === null) return attr;
+          let entries;
+          if (Array.isArray(parsed)) {
+            entries = parsed.map(function (item, i) {
+              const v = typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item == null ? 'null' : item);
+              return { k: '[' + i + ']', v: v };
+            });
+          } else {
+            entries = Object.keys(parsed).map(function (key) {
+              const val = parsed[key];
+              const v = typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val == null ? 'null' : val);
+              return { k: key, v: v };
+            });
+          }
+          if (entries.length === 0) return attr;
+          return { key: attr.key, value: attr.value, parsedEntries: entries };
+        } catch (e) {
+          return attr;
+        }
+      });
+      return { index: row.index, title: row.title, attributes: attrs, raw: row.raw, resultAsString: row.resultAsString };
+    });
+  }),
+
   // ── State guards ──────────────────────────────────────────────────────────
   hasResults: Ember.computed('details.results.[]', function () {
     const r = this.get('details.results');
@@ -119,6 +156,13 @@ polarity.export = PolarityComponent.extend({
         .finally(() => {
           this.set('block._state.checkingStatus', false);
         });
+    },
+    copyText(text) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        navigator.clipboard.writeText(text).catch(() => {
+          this.set('errorMessage', 'Failed to copy statement handle.');
+        });
+      }
     }
   }
 });
