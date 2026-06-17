@@ -46,7 +46,7 @@ async function getToken(options) {
   const oauthTokenRaw = options.oauthToken;
   const oauthTokenResolved = getOpt(options, 'oauthToken');
 
-  Logger.info(
+  Logger.trace(
     {
       authTypeRaw: typeof authTypeRaw === 'object' ? JSON.stringify(authTypeRaw) : authTypeRaw,
       authTypeResolved: authType,
@@ -73,7 +73,7 @@ async function getToken(options) {
   const rawPrivateKey = getOpt(options, 'privateKey');
   const normalizedForDiag = (rawPrivateKey || '').replace(/\\n/g, '\n').replace(/\\r/g, '').trim();
   const pemHeader = normalizedForDiag.split('\n')[0] || '(empty)';
-  Logger.info(
+  Logger.trace(
     {
       pemHeader,
       keyLength: normalizedForDiag.length,
@@ -89,12 +89,12 @@ async function getToken(options) {
     privateKey: getOpt(options, 'privateKey'),
     privateKeyPassphrase: getOpt(options, 'privateKeyPassphrase')
   });
-  Logger.info(
+  Logger.trace(
     {
       fingerprint,
       jwtIss,
       jwtSub,
-      hint: 'Run in Snowflake: DESCRIBE USER POLARITY_EXTSVC; and compare RSA_PUBLIC_KEY_FP value against fingerprint above.'
+      hint: `Run in Snowflake: "DESCRIBE USER ${getOpt(options, 'username')};" and compare RSA_PUBLIC_KEY_FP value against fingerprint above.`
     },
     'JWT generated — verify fingerprint matches Snowflake'
   );
