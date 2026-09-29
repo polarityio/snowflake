@@ -2,6 +2,9 @@
 
 const { v4: uuidv4 } = require('uuid');
 const request = require('postman-request');
+const { version } = require('../package.json');
+
+const USER_AGENT = `polarity-snowflake-integration/${version}`;
 
 /**
  * Wraps postman-request in a Promise and handles Snowflake SQL API response codes.
@@ -18,7 +21,7 @@ function makeRequest({ method, url, token, authType, body, logger }) {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'User-Agent': 'polarity-snowflake-integration/3.1.5',
+        'User-Agent': USER_AGENT,
         Authorization: `Bearer ${token}`,
         'X-Snowflake-Authorization-Token-Type': authType
       }

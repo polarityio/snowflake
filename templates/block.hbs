@@ -194,6 +194,9 @@
         <div class="snow-attr-row">
           <span class="p-key">Statement Handle:</span>
           <span class="p-value snow-mono">{{details.statementHandle}}</span>
+          <button type="button" aria-label="Copy statement handle" class="btn btn-polarity btn-xs" {{action "copyText" details.statementHandle}} title="Copy statement handle">
+            {{fa-icon "copy" fixedWidth=true}}
+          </button>
         </div>
       {{/if}}
       {{#if details.executionStats.elapsedSeconds}}

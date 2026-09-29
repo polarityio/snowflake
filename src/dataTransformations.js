@@ -1,7 +1,5 @@
 'use strict';
 
-const { get } = require('lodash');
-
 /**
  * Parses a Snowflake ResultSet (200 response) into an array of plain row objects.
  *
@@ -112,7 +110,7 @@ function mapResultRows(resultSet, detailAttrList, itemTitleAttr) {
       title,
       attributes: displayAttributes,
       raw, // retained for summary tag resolution
-      resultAsString: JSON.stringify(raw).toLowerCase() // for the filter input
+      resultAsString: JSON.stringify(displayAttributes).toLowerCase() // for the filter input
     };
   });
 
